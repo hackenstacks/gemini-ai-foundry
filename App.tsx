@@ -11,7 +11,8 @@ import {
   BrainCircuitIcon,
   SparklesIcon,
   RadioTowerIcon,
-  FilesIcon
+  FilesIcon,
+  HelpCircleIcon
 } from './components/Icons';
 import LiveConversation from './features/LiveConversation';
 import ChatBot from './features/ChatBot';
@@ -23,6 +24,8 @@ import DocumentAnalysis from './features/DocumentAnalysis';
 import DocumentLibrary from './features/DocumentLibrary';
 import GroundingSearch from './features/GroundingSearch';
 import ComplexReasoning from './features/ComplexReasoning';
+import Tooltip from './components/Tooltip';
+import HelpModal from './components/HelpModal';
 
 
 const features: Feature[] = [
@@ -41,6 +44,7 @@ const features: Feature[] = [
 const App: React.FC = () => {
   const [activeFeature, setActiveFeature] = useState<FeatureId>('live');
   const [documents, setDocuments] = useState<File[]>([]);
+  const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
 
   const renderFeature = () => {
     const feature = features.find(f => f.id === activeFeature);
@@ -66,25 +70,39 @@ const App: React.FC = () => {
         </div>
         <div className="flex-grow">
         {features.map(feature => (
-          <button
-            key={feature.id}
-            onClick={() => setActiveFeature(feature.id)}
-            className={`flex items-center space-x-3 p-2 rounded-lg transition-colors w-full text-left mb-1 ${
-              activeFeature === feature.id
-                ? 'bg-blue-600/30 text-white'
-                : 'hover:bg-slate-800 text-slate-400'
-            }`}
-          >
-            <div className="w-6 h-6 flex-shrink-0">{feature.icon}</div>
-            <span className="hidden md:inline">{feature.name}</span>
-          </button>
+          <Tooltip key={feature.id} text={feature.description} position="top">
+            <button
+              onClick={() => setActiveFeature(feature.id)}
+              className={`flex items-center space-x-3 p-2 rounded-lg transition-colors w-full text-left mb-1 ${
+                activeFeature === feature.id
+                  ? 'bg-blue-600/30 text-white'
+                  : 'hover:bg-slate-800 text-slate-400'
+              }`}
+            >
+              <div className="w-6 h-6 flex-shrink-0">{feature.icon}</div>
+              <span className="hidden md:inline">{feature.name}</span>
+            </button>
+          </Tooltip>
         ))}
+        </div>
+        <div className="flex-shrink-0">
+            <Tooltip text="Open a detailed guide on how to use all application features." position="top">
+                 <button
+                    onClick={() => setIsHelpModalOpen(true)}
+                    className="flex items-center space-x-3 p-2 rounded-lg transition-colors w-full text-left hover:bg-slate-800 text-slate-400"
+                >
+                    <div className="w-6 h-6 flex-shrink-0"><HelpCircleIcon /></div>
+                    <span className="hidden md:inline">Help</span>
+                </button>
+            </Tooltip>
         </div>
       </nav>
 
       <main className="flex-1 flex flex-col overflow-hidden">
         {renderFeature()}
       </main>
+
+      <HelpModal isOpen={isHelpModalOpen} onClose={() => setIsHelpModalOpen(false)} />
     </div>
   );
 };

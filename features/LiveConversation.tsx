@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 // FIX: import from @google/genai instead of @google/ai/generativelanguage
 import { LiveServerMessage, LiveSession, FunctionDeclaration, Type, FunctionCall } from '@google/genai';
@@ -8,8 +9,10 @@ import { MicIcon, GlobeIcon } from '../components/Icons';
 import useGeolocation from '../hooks/useGeolocation';
 import type { GroundingSource } from '../types';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+import Tooltip from '../components/Tooltip';
 
-type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error' | 'closed';
+type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error' | 'closed' | 'reconnecting';
+const MAX_RECONNECT_ATTEMPTS = 3;
 
 interface SessionData {
     transcripts: { user: string, model: string }[];
@@ -97,6 +100,7 @@ const functionDeclarations: FunctionDeclaration[] = [
 
 const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
     const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
+    const [reconnectAttempts, setReconnectAttempts] = useState(0);
     const [transcripts, setTranscripts] = useState<{ user: string, model: string }[]>([]);
     const [currentInterim, setCurrentInterim] = useState<{ user: string, model: string }>({ user: '', model: '' });
     const [file, setFile] = useState<File | null>(null);
@@ -126,10 +130,10 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         scriptProcessorRef.current?.disconnect();
         scriptProcessorRef.current = null;
         
-        audioContextRef.current?.close();
+        audioContextRef.current?.close().catch(console.error);
         audioContextRef.current = null;
         
-        outputAudioContextRef.current?.close();
+        outputAudioContextRef.current?.close().catch(console.error);
         outputAudioContextRef.current = null;
         
         sourcesRef.current.forEach(source => source.stop());
@@ -370,10 +374,13 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         setIsProcessingTool(false);
     };
 
-    const handleStartConversation = async () => {
+    const handleStartConversation = useCallback(async (isRetry = false) => {
+        if (!isRetry) {
+            setReconnectAttempts(0);
+            setTranscripts([]);
+            setCurrentInterim({ user: '', model: '' });
+        }
         setConnectionState('connecting');
-        setTranscripts([]);
-        setCurrentInterim({ user: '', model: '' });
 
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -388,6 +395,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
             const sessionPromise = GeminiService.connectLive({
                 onopen: () => {
                     setConnectionState('connected');
+                    setReconnectAttempts(0);
                     const source = inputAudioContext.createMediaStreamSource(stream);
                     const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
                     scriptProcessorRef.current = scriptProcessor;
@@ -439,8 +447,22 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                         nextStartTimeRef.current = 0;
                     }
                 },
-                onerror: (e: ErrorEvent) => { console.error('Live session error:', e); setConnectionState('error'); },
-                onclose: () => { setConnectionState('closed'); },
+                onerror: (e: ErrorEvent) => { 
+                    console.error('Live session error:', e); 
+                    setConnectionState('error'); 
+                    handleStopConversation();
+                },
+                onclose: (e: CloseEvent) => {
+                    // Code 1000 is a normal closure.
+                    if (e.code !== 1000 && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                        setConnectionState('reconnecting');
+                        const nextAttempt = reconnectAttempts + 1;
+                        setReconnectAttempts(nextAttempt);
+                        setTimeout(() => handleStartConversation(true), 2000 * nextAttempt); // Exponential backoff
+                    } else {
+                        setConnectionState('closed');
+                    }
+                },
             }, [{ functionDeclarations }]);
 
             sessionPromiseRef.current = sessionPromise;
@@ -449,7 +471,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
             console.error("Failed to start conversation:", error);
             setConnectionState('error');
         }
-    };
+    }, [reconnectAttempts, handleStopConversation]);
     
     useEffect(() => {
         return () => { handleStopConversation(); };
@@ -463,29 +485,41 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         return <div className="text-center text-slate-300"> <p className="font-bold">{file.name}</p> <p className="text-sm">{formatBytes(file.size)}</p> d></div>;
     };
 
+    const isBusy = connectionState === 'connecting' || connectionState === 'reconnecting';
+
     return (
         <FeatureLayout title="Live Conversation" description="Speak with a multimodal Gemini assistant. Ask it to search, analyze files, and more.">
             <div className="grid md:grid-cols-2 gap-6 h-full overflow-hidden">
                 <div className="flex flex-col space-y-4 overflow-hidden">
                     <div className="flex-shrink-0 flex items-center justify-center flex-wrap gap-2">
-                         {connectionState !== 'connected' ? (
-                            <button onClick={handleStartConversation} disabled={connectionState === 'connecting'} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors disabled:bg-slate-600">
-                                <MicIcon />
-                                <span>{connectionState === 'connecting' ? 'Connecting...' : 'Start Conversation'}</span>
-                            </button>
+                        {connectionState !== 'connected' ? (
+                            <Tooltip text="Begin a real-time voice conversation with the AI. Your microphone will be activated.">
+                                <button onClick={() => handleStartConversation()} disabled={isBusy} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors disabled:bg-slate-600">
+                                    <MicIcon />
+                                    <span>{isBusy ? 'Connecting...' : 'Start Conversation'}</span>
+                                </button>
+                            </Tooltip>
                         ) : (
-                            <button onClick={handleStopConversation} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors">
-                                <MicIcon />
-                                <span>Stop Conversation</span>
-                            </button>
+                            <Tooltip text="Stop the current voice conversation and disconnect from the AI.">
+                                <button onClick={handleStopConversation} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors">
+                                    <MicIcon />
+                                    <span>Stop Conversation</span>
+                                </button>
+                            </Tooltip>
                         )}
-                         <input type="file" id="file-upload" className="hidden" onChange={handleFileChange} />
-                         <label htmlFor="file-upload" className="bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 px-4 rounded-lg cursor-pointer transition-colors text-center">
-                             {file ? "Change File" : "Upload File"}
-                         </label>
-                         <button onClick={handleSaveSession} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Save Session</button>
-                         <input type="file" id="load-session" className="hidden" accept=".json" onChange={handleLoadSession} />
-                         <label htmlFor="load-session" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg cursor-pointer transition-colors text-center">Load Session</label>
+                         <input type="file" id="file-upload" className="hidden" onChange={handleFileChange} disabled={isBusy} />
+                         <Tooltip text="Upload an image, video, audio, or document file. You can then ask the AI to analyze it during your conversation.">
+                             <label htmlFor="file-upload" className={`bg-slate-700 text-white font-bold py-2 px-4 rounded-lg transition-colors text-center ${isBusy ? 'cursor-not-allowed bg-slate-600' : 'cursor-pointer hover:bg-slate-600'}`}>
+                                 {file ? "Change File" : "Upload File"}
+                             </label>
+                         </Tooltip>
+                         <Tooltip text="Download a JSON file containing the full conversation transcript and any uploaded file data.">
+                            <button onClick={handleSaveSession} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Save Session</button>
+                         </Tooltip>
+                         <input type="file" id="load-session" className="hidden" accept=".json" onChange={handleLoadSession} disabled={isBusy} />
+                         <Tooltip text="Load a conversation from a previously saved JSON session file.">
+                            <label htmlFor="load-session" className={`bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-colors text-center ${isBusy ? 'cursor-not-allowed bg-slate-600' : 'cursor-pointer hover:bg-blue-700'}`}>Load Session</label>
+                         </Tooltip>
                     </div>
                     <div className="flex-grow bg-slate-800/50 rounded-lg p-4 flex items-center justify-center min-h-0">{renderMedia()}</div>
                 </div>
@@ -521,8 +555,10 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                 </div>
             </div>
              <div className="h-8 text-center mt-2">
-                {connectionState === 'error' && <p className="text-red-400">An error occurred. Please try again.</p>}
-                {connectionState === 'closed' && <p className="text-yellow-400">Connection closed.</p>}
+                {connectionState === 'error' && <p className="text-red-400">An error occurred. Please try starting the conversation again.</p>}
+                {connectionState === 'closed' && reconnectAttempts >= MAX_RECONNECT_ATTEMPTS && <p className="text-red-400">Could not reconnect. Please check your connection and try again.</p>}
+                {connectionState === 'closed' && reconnectAttempts < MAX_RECONNECT_ATTEMPTS && <p className="text-yellow-400">Connection closed.</p>}
+                {connectionState === 'reconnecting' && <p className="text-yellow-400">Connection lost. Reconnecting... (Attempt {reconnectAttempts})</p>}
             </div>
         </FeatureLayout>
     );

@@ -1,5 +1,5 @@
 // FIX: import from @google/genai instead of @google/ai/generativelanguage
-import { GoogleGenAI, Type, Modality, Chat, GenerateContentResponse, GroundingChunk, LiveServerMessage, FunctionDeclaration } from '@google/genai';
+import { GoogleGenAI, Type, Modality, Chat, GenerateContentResponse, GroundingChunk, LiveServerMessage, FunctionDeclaration, Content } from '@google/genai';
 
 const getAi = (): GoogleGenAI => {
     if (!process.env.API_KEY) {
@@ -22,6 +22,32 @@ export const GeminiService = {
         return getAi().chats.create({
             model: 'gemini-2.5-flash',
         });
+    },
+
+    createChatWithHistory: (history: Content[]): Chat => {
+        return getAi().chats.create({
+            model: 'gemini-2.5-flash',
+            history: history,
+        });
+    },
+
+    summarizeConversation: async (history: Content[]): Promise<string> => {
+        const conversationText = history
+            .map(c => `${c.role}: ${c.parts.map(p => ('text' in p) ? p.text : '').join('')}`)
+            .join('\n\n');
+
+        if (!conversationText.trim()) {
+            return "No conversation to summarize.";
+        }
+
+        const prompt = `Summarize the following conversation concisely. Focus on key information, decisions, and any unresolved topics that might be important for the next part of the conversation. The summary should be from a neutral, third-person perspective.\n\n---\n\n${conversationText}`;
+        
+        const response = await getAi().models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+        });
+
+        return response.text;
     },
 
     analyzeImage: async (prompt: string, imageBase64: string, mimeType: string): Promise<GenerateContentResponse> => {

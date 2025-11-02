@@ -14,9 +14,10 @@ const DocumentLibrary: React.FC<DocumentLibraryProps> = ({ documents, setDocumen
         const files = e.target.files;
         if (files) {
             const newFiles = Array.from(files);
-            // Prevent duplicates
-            // FIX: Explicitly type `df` as `File` to avoid type inference issues.
-            const uniqueNewFiles = newFiles.filter(nf => !documents.some((df: File) => df.name === nf.name));
+            // Prevent duplicates by creating a Set of existing file names for efficient lookup.
+            const existingFileNames = new Set(documents.map(doc => doc.name));
+            // FIX: Explicitly type `nf` as `File` to help TypeScript correctly infer its type from the FileList, resolving the error.
+            const uniqueNewFiles = newFiles.filter((nf: File) => !existingFileNames.has(nf.name));
             setDocuments(prev => [...prev, ...uniqueNewFiles]);
         }
     };
