@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { XIcon } from './Icons';
 
@@ -10,11 +9,11 @@ interface HelpModalProps {
 const helpContent = [
     {
       title: 'Live Conversation',
-      content: 'Engage in a real-time voice conversation with Gemini. You can ask it to perform various tasks like searching the web, analyzing uploaded files, or controlling media playback. Just click "Start Conversation" and speak naturally. You can upload a temporary file or ask it to analyze a file from your File Library.'
+      content: 'Engage in a real-time voice conversation with Gemini. You can now ask it to generate images, browse websites by URL, search the web, analyze uploaded files, or control media playback. Announce your requests clearly.'
     },
     {
       title: 'Chat',
-      content: 'Have a classic text-based chat with Gemini. It remembers the context of your conversation, which is securely stored and encrypted in your browser. For very long chats, it will automatically summarize the history to ensure it doesn\'t forget earlier parts of the discussion.'
+      content: 'Have a classic text-based chat with your own personalized AI. Click the settings icon in the chat input area to configure the AI\'s persona, including its role, personality, and even an avatar. Your custom persona and chat history are saved securely in your browser.'
     },
     {
       title: 'Complex Reasoning',
@@ -30,7 +29,7 @@ const helpContent = [
     },
     {
       title: 'Image Generation',
-      content: 'Create unique images from text prompts using the Imagen model. Describe what you want to see, choose an aspect ratio, and let the AI bring your vision to life.'
+      content: 'Create unique images from text prompts using the Imagen model. You can now add negative prompts (what to avoid) and select from various preset styles to guide the generation process for better results.'
     },
     {
       title: 'Video Analysis',

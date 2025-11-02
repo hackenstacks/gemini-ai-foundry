@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 // FIX: import from @google/genai instead of @google/ai/generativelanguage
 import { LiveServerMessage, LiveSession, FunctionDeclaration, Type, FunctionCall } from '@google/genai';
@@ -44,6 +43,30 @@ const functionDeclarations: FunctionDeclaration[] = [
         },
     },
     {
+        name: 'browseWebsite',
+        parameters: {
+            type: Type.OBJECT,
+            description: 'Reads the content of a specific website URL and provides a summary. Use the full URL including "https://".',
+            properties: {
+                url: { type: Type.STRING, description: 'The full URL of the website to browse.' },
+            },
+            required: ['url'],
+        },
+    },
+    {
+        name: 'generateImage',
+        parameters: {
+            type: Type.OBJECT,
+            description: 'Generates an image based on a textual description.',
+            properties: {
+                prompt: { type: Type.STRING, description: 'A detailed description of the image to generate.' },
+                style: { type: Type.STRING, description: 'The artistic style, e.g., "photorealistic", "anime", "cartoon".' },
+                negativePrompt: { type: Type.STRING, description: 'A description of things to avoid in the image.' },
+            },
+            required: ['prompt'],
+        },
+    },
+    {
         name: 'listDocuments',
         parameters: {
             type: Type.OBJECT,
@@ -86,17 +109,6 @@ const functionDeclarations: FunctionDeclaration[] = [
             required: ['action'],
         },
     },
-    {
-        name: 'readWebsiteContent',
-        parameters: {
-            type: Type.OBJECT,
-            description: 'Reads the content of a website from the search results and provides a summary. Use a topic from the search result titles as the parameter.',
-            properties: {
-                topic: { type: Type.STRING, description: 'A keyword or topic from the title of the search result to read.' },
-            },
-            required: ['topic'],
-        },
-    },
 ];
 
 const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
@@ -107,6 +119,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
     const [file, setFile] = useState<File | null>(null);
     const [fileUrl, setFileUrl] = useState<string | null>(null);
     const [analysisResult, setAnalysisResult] = useState<string | null>(null);
+    const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
     const [sources, setSources] = useState<GroundingSource[]>([]);
     const [isProcessingTool, setIsProcessingTool] = useState(false);
 
@@ -120,6 +133,12 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
 
     const nextStartTimeRef = useRef(0);
     const sourcesRef = useRef(new Set<AudioBufferSourceNode>());
+    
+    const clearOutputs = () => {
+        setAnalysisResult(null);
+        setSources([]);
+        setGeneratedImageUrl(null);
+    };
 
     const handleStopConversation = useCallback(() => {
         sessionPromiseRef.current?.then(session => session.close());
@@ -147,8 +166,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         const selectedFile = e.target.files?.[0];
         if (selectedFile) {
             setFile(selectedFile);
-            setAnalysisResult(null);
-            setSources([]);
+            clearOutputs();
             if (fileUrl) {
                 URL.revokeObjectURL(fileUrl);
             }
@@ -217,13 +235,12 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
             }
         };
         reader.readAsText(sessionFile);
-        // Reset file input to allow loading the same file again
         e.target.value = '';
     };
 
     const handleToolCall = async (functionCalls: FunctionCall[]) => {
         setIsProcessingTool(true);
-        setAnalysisResult('');
+        clearOutputs();
         const session = await sessionPromiseRef.current;
         if (!session) return;
         
@@ -240,7 +257,6 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                         const searchResponse = await GeminiService.groundedSearch(args.query, args.useMaps, geo);
                         const searchResultText = searchResponse.text;
                         const groundingChunks = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
-                        setSources([]); // Clear previous sources
                         if (groundingChunks) {
                             const newSources: GroundingSource[] = groundingChunks.map((chunk: any) => ({
                                 uri: chunk.web?.uri || chunk.maps?.uri || '#',
@@ -253,6 +269,23 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                         result = { status: 'success', summary: searchResultText };
                         break;
                     
+                    case 'browseWebsite':
+                        const browseSummary = await GeminiService.browseWebsite(args.url);
+                        setAnalysisResult(browseSummary);
+                        result = { status: 'success', summary: browseSummary };
+                        break;
+
+                    case 'generateImage':
+                        const fullPrompt = args.style ? `${args.prompt}, in the style of ${args.style}` : args.prompt;
+                        const images = await GeminiService.generateImage(fullPrompt, "16:9", args.negativePrompt);
+                        if (images.length > 0) {
+                            setGeneratedImageUrl(`data:image/jpeg;base64,${images[0]}`);
+                            result = { status: 'success', message: 'Image generated successfully.' };
+                        } else {
+                            result = { status: 'error', message: 'Image generation failed to return an image.' };
+                        }
+                        break;
+
                     case 'listDocuments':
                         if (activeDocuments.length === 0) {
                             result = { status: 'success', message: "The file library is currently empty." };
@@ -291,7 +324,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                             } else if (fileToAnalyze.type.startsWith('audio/')) {
                                 const base64 = await fileToBase64(fileToAnalyze);
                                 analysisText = (await GeminiService.transcribeAudio(base64, fileToAnalyze.type)).text;
-                            } else if (fileToAnalyze.type === 'application/pdf' || fileToAnalyze.type.startsWith('text/')) {
+                            } else if (fileToAnalyze.type.startsWith('text/')) {
                                  const textContent = await readFileContent(fileToAnalyze);
                                  analysisText = (await GeminiService.analyzeDocument(textContent, args.prompt)).text;
                             } else {
@@ -325,46 +358,6 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                             result = { status: 'success', action: args.action };
                         } else {
                             result = { status: 'error', message: 'No media is loaded.' };
-                        }
-                        break;
-
-                    case 'readWebsiteContent':
-                        if (sources.length === 0) {
-                            result = { status: 'error', message: 'No websites have been searched yet. Please perform a web search first.' };
-                            break;
-                        }
-                        const topic = (args.topic || '').toLowerCase();
-                        const targetSource = sources.find(s => s.title.toLowerCase().includes(topic));
-
-                        if (!targetSource) {
-                            result = { status: 'error', message: `Could not find a search result related to "${args.topic}". Please be more specific or try another topic from the search results.` };
-                            break;
-                        }
-                        
-                        try {
-                            const response = await fetch(targetSource.uri);
-                            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                            
-                            const html = await response.text();
-                            const textContent = html.replace(/<style[^>]*>.*<\/style>/gs, '')
-                                                    .replace(/<script[^>]*>.*<\/script>/gs, '')
-                                                    .replace(/<[^>]+>/g, ' ')
-                                                    .replace(/\s+/g, ' ').trim();
-
-                            if (textContent.length < 50) {
-                                 result = { status: 'error', message: 'Could not extract enough readable text from the website.' };
-                                 break;
-                            }
-
-                            const summaryResponse = await GeminiService.analyzeDocument(textContent.substring(0, 30000), 'Please summarize the following website content concisely.');
-                            const summary = summaryResponse.text;
-                            setAnalysisResult(summary);
-                            result = { status: 'success', summary: summary };
-
-                        } catch (e) {
-                             const errorMessage = 'I was unable to access that website due to web security restrictions (CORS). I cannot read the content from every page.';
-                             setAnalysisResult(errorMessage);
-                             result = { status: 'error', message: errorMessage };
                         }
                         break;
                 }
@@ -460,12 +453,11 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                     handleStopConversation();
                 },
                 onclose: (e: CloseEvent) => {
-                    // Code 1000 is a normal closure.
                     if (e.code !== 1000 && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                         setConnectionState('reconnecting');
                         const nextAttempt = reconnectAttempts + 1;
                         setReconnectAttempts(nextAttempt);
-                        setTimeout(() => handleStartConversation(true), 2000 * nextAttempt); // Exponential backoff
+                        setTimeout(() => handleStartConversation(true), 2000 * nextAttempt);
                     } else {
                         setConnectionState('closed');
                     }
@@ -491,6 +483,14 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         if (file.type.startsWith("audio/")) return <audio ref={mediaRef} src={fileUrl} controls className="w-full" />;
         return <div className="text-center text-slate-300"> <p className="font-bold">{file.name}</p> <p className="text-sm">{formatBytes(file.size)}</p> d></div>;
     };
+    
+    const renderOutput = () => {
+        if (isProcessingTool) return <p className="text-slate-400">Processing request...</p>;
+        if (generatedImageUrl) return <img src={generatedImageUrl} alt="Generated by AI" className="max-w-full max-h-full object-contain rounded-lg mx-auto" />;
+        if (analysisResult) return <MarkdownRenderer content={analysisResult} />;
+        if (sources.length > 0) return null; // Rendered below
+        return <p className="text-slate-500">Results from tools will appear here.</p>;
+    }
 
     const isBusy = connectionState === 'connecting' || connectionState === 'reconnecting';
 
@@ -532,16 +532,14 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                 </div>
                 <div className="flex flex-col space-y-4 h-full overflow-hidden">
                     <div className="flex-grow bg-slate-800/50 rounded-lg p-4 overflow-y-auto min-h-0">
-                        <h3 className="text-lg font-semibold mb-2 text-slate-300 border-b border-slate-700 pb-2">Analysis & Search Results</h3>
-                        {isProcessingTool && <p className="text-slate-400">Processing request...</p>}
-                        {analysisResult && <MarkdownRenderer content={analysisResult} />}
+                        <h3 className="text-lg font-semibold mb-2 text-slate-300 border-b border-slate-700 pb-2">Analysis & Tool Results</h3>
+                        {renderOutput()}
                         {sources.length > 0 && (
                             <div className="mt-4">
                                 <h4 className="font-semibold text-slate-400">Sources:</h4>
                                 <ul className="space-y-1 mt-1">{sources.map((s, i) => <li key={i} className="flex items-start space-x-2"><GlobeIcon /><a href={s.uri} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline text-sm truncate">{s.title}</a></li>)}</ul>
                             </div>
                         )}
-                        {!analysisResult && !isProcessingTool && <p className="text-slate-500">Results from tools will appear here.</p>}
                     </div>
                     <div className="flex-grow bg-slate-800/50 rounded-lg p-4 overflow-y-auto min-h-0">
                          <h3 className="text-lg font-semibold mb-2 text-slate-300 border-b border-slate-700 pb-2">Conversation Transcript</h3>

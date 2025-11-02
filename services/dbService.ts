@@ -1,12 +1,12 @@
-
-import { ChatMessage } from '../types';
+import { ChatMessage, Persona } from '../types';
 import { cryptoService } from './cryptoService';
 import { fileToBase64, base64ToBlob } from '../utils/helpers';
 
 const DB_NAME = 'GeminiAIStudioDB';
-const DB_VERSION = 2; // Incremented version for schema change
+const DB_VERSION = 3; // Incremented version for new store
 const FILE_STORE = 'files';
 const CHAT_STORE = 'chatHistory';
+const SETTINGS_STORE = 'app_settings';
 
 let dbInstance: IDBDatabase | null = null;
 
@@ -49,12 +49,15 @@ const openDB = (): Promise<IDBDatabase> => {
       if (!db.objectStoreNames.contains(CHAT_STORE)) {
         db.createObjectStore(CHAT_STORE, { keyPath: 'id' });
       }
-      // Handle potential migration from older versions if needed
+       if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
+        db.createObjectStore(SETTINGS_STORE, { keyPath: 'id' });
+      }
     };
   });
 };
 
 const CHAT_HISTORY_KEY = 'current_chat';
+const PERSONA_KEY = 'chatbot_persona';
 
 export const dbService = {
   async addDocuments(files: StoredFile[]): Promise<void> {
@@ -88,7 +91,6 @@ export const dbService = {
                 decryptedFiles.push(decrypted);
             } catch (error) {
                 console.error(`Could not decrypt file ${file.name}:`, error);
-                // Skip corrupted files
             }
         }
         resolve(decryptedFiles);
@@ -145,7 +147,7 @@ export const dbService = {
                 resolve(decrypted);
             } catch (error) {
                 console.error("Could not decrypt chat history:", error);
-                resolve([]); // Return empty history if decryption fails
+                resolve([]);
             }
         } else {
             resolve([]);
@@ -166,17 +168,55 @@ export const dbService = {
     });
   },
   
+  async savePersona(persona: Persona): Promise<void> {
+    const db = await openDB();
+    const transaction = db.transaction(SETTINGS_STORE, 'readwrite');
+    const store = transaction.objectStore(SETTINGS_STORE);
+    const encryptedPersona = await cryptoService.encrypt(persona);
+    store.put({ id: PERSONA_KEY, encryptedPersona });
+    return new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+    });
+  },
+
+  async getPersona(): Promise<Persona | null> {
+    const db = await openDB();
+    const transaction = db.transaction(SETTINGS_STORE, 'readonly');
+    const store = transaction.objectStore(SETTINGS_STORE);
+    const request = store.get(PERSONA_KEY);
+    return new Promise((resolve, reject) => {
+        request.onsuccess = async () => {
+            if (request.result && request.result.encryptedPersona) {
+                try {
+                    const decrypted = await cryptoService.decrypt<Persona>(request.result.encryptedPersona);
+                    resolve(decrypted);
+                } catch (error) {
+                    console.error("Could not decrypt persona:", error);
+                    resolve(null);
+                }
+            } else {
+                resolve(null);
+            }
+        };
+        request.onerror = () => reject(request.error);
+    });
+  },
+  
   async exportData(): Promise<object> {
       const db = await openDB();
       const fileTransaction = db.transaction(FILE_STORE, 'readonly');
       const chatTransaction = db.transaction(CHAT_STORE, 'readonly');
+      const settingsTransaction = db.transaction(SETTINGS_STORE, 'readonly');
       
       const filesRequest = fileTransaction.objectStore(FILE_STORE).getAll();
       const chatRequest = chatTransaction.objectStore(CHAT_STORE).get(CHAT_HISTORY_KEY);
+      const personaRequest = settingsTransaction.objectStore(SETTINGS_STORE).get(PERSONA_KEY);
       
-      const [files, chatResult, key] = await Promise.all([
+      const [files, chatResult, personaResult, key] = await Promise.all([
           new Promise((res, rej) => { filesRequest.onsuccess = () => res(filesRequest.result); filesRequest.onerror = () => rej(filesRequest.error); }),
           new Promise((res, rej) => { chatRequest.onsuccess = () => res(chatRequest.result); chatRequest.onerror = () => rej(chatRequest.error); }),
+          new Promise((res, rej) => { personaRequest.onsuccess = () => res(personaRequest.result); personaRequest.onerror = () => rej(personaRequest.error); }),
           cryptoService.getExportableKey()
       ]);
       
@@ -187,58 +227,52 @@ export const dbService = {
       return {
           encryptionKey: key,
           files: files,
-          chatHistory: chatResult
+          chatHistory: chatResult,
+          persona: personaResult,
       };
   },
   
   async importData(data: any): Promise<void> {
-      const { encryptionKey, files, chatHistory } = data;
+      const { encryptionKey, files, chatHistory, persona } = data;
       if (!encryptionKey || !Array.isArray(files)) {
           throw new Error("Invalid import file format.");
       }
       
-      // Clear existing key and data
       cryptoService.clearKey();
       await cryptoService.importKey(encryptionKey);
       
       const db = await openDB();
       const clearFileTrans = db.transaction(FILE_STORE, 'readwrite');
       const clearChatTrans = db.transaction(CHAT_STORE, 'readwrite');
+      const clearSettingsTrans = db.transaction(SETTINGS_STORE, 'readwrite');
       
-      const clearFilesPromise = new Promise<void>((res, rej) => {
-          const req = clearFileTrans.objectStore(FILE_STORE).clear();
-          req.onsuccess = () => res();
-          req.onerror = () => rej(req.error);
-      });
-      const clearChatPromise = new Promise<void>((res, rej) => {
-          const req = clearChatTrans.objectStore(CHAT_STORE).clear();
-          req.onsuccess = () => res();
-          req.onerror = () => rej(req.error);
-      });
+      await Promise.all([
+          new Promise<void>((res, rej) => { const r = clearFileTrans.objectStore(FILE_STORE).clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }),
+          new Promise<void>((res, rej) => { const r = clearChatTrans.objectStore(CHAT_STORE).clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }),
+          new Promise<void>((res, rej) => { const r = clearSettingsTrans.objectStore(SETTINGS_STORE).clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }),
+      ]);
       
-      await Promise.all([clearFilesPromise, clearChatPromise]);
-      
-      // Import new data
       const importFileTrans = db.transaction(FILE_STORE, 'readwrite');
       const importChatTrans = db.transaction(CHAT_STORE, 'readwrite');
-      const fileStore = importFileTrans.objectStore(FILE_STORE);
-      const chatStore = importChatTrans.objectStore(CHAT_STORE);
+      const importSettingsTrans = db.transaction(SETTINGS_STORE, 'readwrite');
       
-      files.forEach(file => fileStore.put(file));
+      files.forEach(file => importFileTrans.objectStore(FILE_STORE).put(file));
       if (chatHistory) {
-          chatStore.put(chatHistory);
+          importChatTrans.objectStore(CHAT_STORE).put(chatHistory);
+      }
+       if (persona) {
+          importSettingsTrans.objectStore(SETTINGS_STORE).put(persona);
       }
       
        return new Promise((resolve, reject) => {
            let completed = 0;
-           const checkCompletion = () => {
-               completed++;
-               if (completed === 2) resolve();
-           };
+           const checkCompletion = () => { if (++completed === 3) resolve(); };
            importFileTrans.oncomplete = checkCompletion;
            importChatTrans.oncomplete = checkCompletion;
+           importSettingsTrans.oncomplete = checkCompletion;
            importFileTrans.onerror = () => reject(importFileTrans.error);
            importChatTrans.onerror = () => reject(importChatTrans.error);
+           importSettingsTrans.onerror = () => reject(importSettingsTrans.error);
        });
   }
 };

@@ -1,4 +1,3 @@
-
 // FIX: Import React to resolve the "Cannot find namespace 'React'" error.
 import React, { ReactNode } from 'react';
 
@@ -6,6 +5,15 @@ export interface ChatMessage {
   role: 'user' | 'model';
   parts: { text: string }[];
   sources?: GroundingSource[];
+}
+
+export interface Persona {
+  systemPrompt: string;
+  role: string;
+  personalityTraits: string;
+  characterDescription: string;
+  avatarUrl: string;
+  scenario: string;
 }
 
 export interface GroundingSource {

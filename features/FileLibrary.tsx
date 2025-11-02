@@ -19,7 +19,8 @@ const FileLibrary: React.FC<FileLibraryProps> = ({ documents, setDocuments }) =>
             const newFiles = Array.from(files);
             // FIX: Explicitly type `doc` as StoredFile. The compiler was incorrectly inferring it as `unknown`, causing an error when accessing `doc.name`.
             const existingFileNames = new Set(documents.map((doc: StoredFile) => doc.name));
-            const uniqueNewFiles = newFiles.filter(nf => !existingFileNames.has(nf.name));
+            // FIX: Explicitly type `nf` as File. The compiler was incorrectly inferring it as `unknown`, causing an error when accessing `nf.name`.
+            const uniqueNewFiles = newFiles.filter((nf: File) => !existingFileNames.has(nf.name));
 
             if (uniqueNewFiles.length > 0) {
                 try {

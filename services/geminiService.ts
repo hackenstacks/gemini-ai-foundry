@@ -1,5 +1,6 @@
 // FIX: import from @google/genai instead of @google/ai/generativelanguage
 import { GoogleGenAI, Type, Modality, Chat, GenerateContentResponse, GroundingChunk, LiveServerMessage, FunctionDeclaration, Content } from '@google/genai';
+import { Persona } from '../types';
 
 const getAi = (): GoogleGenAI => {
     if (!process.env.API_KEY) {
@@ -18,17 +19,39 @@ type LiveCallbacks = {
 };
 
 export const GeminiService = {
-    createChat: (): Chat => {
+    createChat: (systemInstruction?: string): Chat => {
         return getAi().chats.create({
             model: 'gemini-2.5-flash',
+            ...(systemInstruction && { config: { systemInstruction } }),
         });
     },
 
-    createChatWithHistory: (history: Content[]): Chat => {
+    createChatWithHistory: (history: Content[], systemInstruction?: string): Chat => {
         return getAi().chats.create({
             model: 'gemini-2.5-flash',
             history: history,
+            ...(systemInstruction && { config: { systemInstruction } }),
         });
+    },
+
+    getPersonaSuggestion: async (field: keyof Persona, currentPersona: Partial<Persona>): Promise<string> => {
+        const personaContext = Object.entries(currentPersona)
+            .filter(([, value]) => value)
+            .map(([key, value]) => `${key}: ${value}`)
+            .join(', ');
+        
+        const prompt = `Based on the following partial chatbot persona, generate a creative suggestion for the "${field}" field. The suggestion should be a single, concise string.
+        
+        Current Persona: ${personaContext || 'No details yet.'}
+        
+        Generate a suggestion for: ${field}`;
+        
+        const response = await getAi().models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt
+        });
+        
+        return response.text.trim();
     },
 
     summarizeConversation: async (history: Content[]): Promise<string> => {
@@ -65,15 +88,21 @@ export const GeminiService = {
         });
     },
 
-    generateImage: async (prompt: string, aspectRatio: string): Promise<string[]> => {
+    generateImage: async (prompt: string, aspectRatio: string, negativePrompt?: string): Promise<string[]> => {
+        const config: any = {
+            numberOfImages: 1,
+            outputMimeType: 'image/jpeg',
+            aspectRatio: aspectRatio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9",
+        };
+
+        if (negativePrompt) {
+            config.negativePrompt = negativePrompt;
+        }
+
         const response = await getAi().models.generateImages({
             model: 'imagen-4.0-generate-001',
             prompt,
-            config: {
-                numberOfImages: 1,
-                outputMimeType: 'image/jpeg',
-                aspectRatio: aspectRatio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9",
-            },
+            config,
         });
         return response.generatedImages.map(img => img.image.imageBytes);
     },
@@ -137,6 +166,41 @@ export const GeminiService = {
             },
         });
     },
+    
+    browseWebsite: async (url: string): Promise<string> => {
+        try {
+            // NOTE: This fetch is subject to CORS policies and will fail for many websites.
+            // A server-side proxy would be required for a robust implementation.
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch website. Status: ${response.status}`);
+            }
+            const html = await response.text();
+             // Basic text extraction, removing scripts, styles, and tags.
+            const textContent = html.replace(/<style[^>]*>.*<\/style>/gs, '')
+                                    .replace(/<script[^>]*>.*<\/script>/gs, '')
+                                    .replace(/<[^>]+>/g, ' ')
+                                    .replace(/\s\s+/g, ' ')
+                                    .trim();
+
+            if (textContent.length < 100) {
+                return "Could not extract sufficient readable content from the website.";
+            }
+
+            // Summarize the extracted text.
+            const summaryResponse = await getAi().models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: `Summarize the following website content concisely:\n\n${textContent.substring(0, 30000)}`
+            });
+            return summaryResponse.text;
+        } catch (error: any) {
+            console.error(`Error browsing website ${url}:`, error);
+            if (error.message.includes('Failed to fetch')) {
+                return `I was unable to access that website. This is often due to web security restrictions (CORS). I cannot access every page directly.`;
+            }
+            return `An error occurred while trying to browse the website: ${error.message}`;
+        }
+    },
 
     complexReasoning: async (prompt: string): Promise<GenerateContentResponse> => {
         return getAi().models.generateContent({
@@ -161,12 +225,14 @@ export const GeminiService = {
                 },
                 inputAudioTranscription: {},
                 outputAudioTranscription: {},
-                systemInstruction: `You are a friendly and helpful AI assistant. You can control the app to help the user.
-- You have access to a document library. You can see what's available with the 'listDocuments' tool.
-- You can analyze images, videos, audio, and documents. Use the 'analyzeFile' tool. For files in the library, specify the 'fileName'. If the user uploads a file during our conversation, you can analyze it without the 'fileName'. If the user asks to analyze something without uploading or specifying a file, ask them to do so.
-- You can search the web and maps using the 'searchWeb' tool. After a search, you can read the content of one of the results if the user asks. Use the 'readWebsiteContent' tool with a topic from the search result titles.
-- If the user has uploaded a video or audio file, you can control its playback using the 'controlMediaPlayer' tool. You can play, pause, stop, seek to a specific time in seconds, and set the volume between 0.0 and 1.0.
-- Keep your spoken responses conversational and concise. Announce when you are performing an action, like "Searching the web..." or "Okay, reading the article..." or "Let me check that document for you."`,
+                systemInstruction: `You are a friendly and helpful AI assistant with multiple tools. Be conversational and announce your actions.
+
+Your Capabilities:
+- File Library: Use 'listDocuments' to see available files. Use 'analyzeFile' to read and understand a file from the library or one the user has just uploaded.
+- Web & Maps Search: Use 'searchWeb' for recent information or location-based queries.
+- Web Browsing: Use 'browseWebsite' with a full URL to read a specific webpage. Inform the user if you cannot access it due to security restrictions.
+- Image Generation: Use 'generateImage' to create an image based on the user's description. You can include a style and things to avoid (negative prompt).
+- Media Player: Use 'controlMediaPlayer' to play, pause, stop, seek, or change the volume of a video or audio file the user has uploaded.`,
                 ...(tools && { tools }),
             },
         });

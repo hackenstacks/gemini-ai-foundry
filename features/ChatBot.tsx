@@ -1,16 +1,26 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { Chat } from '@google/genai';
 import { GeminiService } from '../services/geminiService';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, Persona } from '../types';
 import FeatureLayout from './common/FeatureLayout';
 import MarkdownRenderer from '../components/MarkdownRenderer';
-import { SendIcon, TrashIcon } from '../components/Icons';
+import { SendIcon, TrashIcon, SettingsIcon } from '../components/Icons';
 import Spinner from '../components/Spinner';
 import Tooltip from '../components/Tooltip';
 import { dbService } from '../services/dbService';
+import PersonaConfigModal from './common/PersonaConfigModal';
 
-const HISTORY_SUMMARY_THRESHOLD = 10; // Summarize after 10 messages (5 user/model pairs)
-const MESSAGES_TO_KEEP_AFTER_SUMMARY = 4; // Keep the last 4 messages (2 pairs)
+const HISTORY_SUMMARY_THRESHOLD = 10;
+const MESSAGES_TO_KEEP_AFTER_SUMMARY = 4;
+
+const defaultPersona: Persona = {
+  systemPrompt: '',
+  role: 'Helpful Assistant',
+  personalityTraits: 'Friendly, knowledgeable, concise',
+  characterDescription: '',
+  avatarUrl: '',
+  scenario: '',
+};
 
 const ChatBot: React.FC = () => {
     const [chat, setChat] = useState<Chat | null>(null);
@@ -18,33 +28,64 @@ const ChatBot: React.FC = () => {
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [isSummarizing, setIsSummarizing] = useState(false);
+    const [persona, setPersona] = useState<Persona>(defaultPersona);
+    const [isPersonaModalOpen, setIsPersonaModalOpen] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    
+    const constructSystemPrompt = useCallback((p: Persona): string => {
+        let prompt = p.systemPrompt || "You are a helpful AI assistant.";
+        if (p.role) prompt += `\nYour role is: ${p.role}.`;
+        if (p.personalityTraits) prompt += `\nYour personality is: ${p.personalityTraits}.`;
+        if (p.characterDescription) prompt += `\nYour background: ${p.characterDescription}.`;
+        if (p.scenario) prompt += `\nThe current scenario is: ${p.scenario}.`;
+        return prompt.trim();
+    }, []);
 
     useEffect(() => {
         const initializeChat = async () => {
             try {
-                const history = await dbService.getChatHistory();
+                const [history, savedPersona] = await Promise.all([
+                    dbService.getChatHistory(),
+                    dbService.getPersona()
+                ]);
+                
+                if (savedPersona) {
+                    setPersona(savedPersona);
+                }
                 setMessages(history);
+                
+                const systemInstruction = constructSystemPrompt(savedPersona || defaultPersona);
                 const chatInstance = GeminiService.createChatWithHistory(
-                    history.map(m => ({ role: m.role, parts: m.parts }))
+                    history.map(m => ({ role: m.role, parts: m.parts })),
+                    systemInstruction
                 );
                 setChat(chatInstance);
             } catch (error) {
-                console.error("Failed to load chat history:", error);
-                setChat(GeminiService.createChat());
+                console.error("Failed to load chat history or persona:", error);
+                setChat(GeminiService.createChat(constructSystemPrompt(defaultPersona)));
             }
         };
         initializeChat();
-    }, []);
+    }, [constructSystemPrompt]);
     
     useEffect(() => {
-        // Persist messages to IndexedDB whenever they change, if there are any.
         if (messages.length > 0) {
-            dbService.saveChatHistory(messages).catch(error => {
-                console.error("Failed to save chat history:", error);
-            });
+            dbService.saveChatHistory(messages).catch(console.error);
         }
     }, [messages]);
+    
+    const handleSavePersona = async (newPersona: Persona) => {
+        setPersona(newPersona);
+        await dbService.savePersona(newPersona);
+        // Re-initialize chat with new persona
+        const systemInstruction = constructSystemPrompt(newPersona);
+        const chatHistory = await dbService.getChatHistory();
+        const chatInstance = GeminiService.createChatWithHistory(
+            chatHistory.map(m => ({ role: m.role, parts: m.parts })),
+            systemInstruction
+        );
+        setChat(chatInstance);
+    };
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -77,8 +118,9 @@ const ChatBot: React.FC = () => {
             console.error(error);
              setMessages(prev => {
                 const newMessages = [...prev];
-                if (newMessages.length > 0 && newMessages[newMessages.length - 1].role === 'model' && newMessages[newMessages.length - 1].parts[0].text === '') {
-                     newMessages[newMessages.length - 1].parts[0].text = 'Sorry, something went wrong. Please try again.';
+                const lastMessage = newMessages[newMessages.length - 1];
+                if (lastMessage?.role === 'model' && lastMessage.parts[0].text === '') {
+                     lastMessage.parts[0].text = 'Sorry, something went wrong. Please try again.';
                 } else {
                     newMessages.push({ role: 'model', parts: [{ text: 'Sorry, something went wrong. Please try again.' }] });
                 }
@@ -90,67 +132,48 @@ const ChatBot: React.FC = () => {
     };
 
     const summarizeHistory = useCallback(async () => {
-        if (!chat || messages.length < HISTORY_SUMMARY_THRESHOLD || isLoading) {
-            return;
-        }
+        if (!chat || messages.length < HISTORY_SUMMARY_THRESHOLD || isLoading) return;
 
         setIsSummarizing(true);
         try {
             const historyToSummarize = await chat.getHistory();
             if (historyToSummarize.length === 0) {
-                setIsSummarizing(false);
-                return;
+                setIsSummarizing(false); return;
             }
             
             const summary = await GeminiService.summarizeConversation(historyToSummarize);
-
             const recentMessages = messages.slice(messages.length - MESSAGES_TO_KEEP_AFTER_SUMMARY);
 
             const newChatHistory = [
-                {
-                    role: 'user' as const,
-                    parts: [{ text: `Let's continue our conversation. Here is a summary of what we've discussed so far:\n\n${summary}` }]
-                },
-                {
-                    role: 'model' as const,
-                    parts: [{ text: "Thank you for the summary. I'm ready to continue." }]
-                },
-                ...recentMessages.map(m => ({
-                    role: m.role,
-                    parts: m.parts,
-                })),
+                { role: 'user' as const, parts: [{ text: `Let's continue. Here is a summary of our discussion:\n\n${summary}` }] },
+                { role: 'model' as const, parts: [{ text: "Thanks for the summary. I'm ready." }] },
+                ...recentMessages.map(m => ({ role: m.role, parts: m.parts })),
             ];
-
-            const newChat = GeminiService.createChatWithHistory(newChatHistory);
+            
+            const systemInstruction = constructSystemPrompt(persona);
+            const newChat = GeminiService.createChatWithHistory(newChatHistory, systemInstruction);
             setChat(newChat);
 
-            const summaryNotification: ChatMessage = {
-                role: 'model',
-                parts: [{ text: `_Conversation summarized to preserve context. Last ${MESSAGES_TO_KEEP_AFTER_SUMMARY / 2} turns kept._` }]
-            };
+            const summaryNotification: ChatMessage = { role: 'model', parts: [{ text: `_Conversation summarized. Last ${MESSAGES_TO_KEEP_AFTER_SUMMARY / 2} turns kept._` }] };
             setMessages([summaryNotification, ...recentMessages]);
             
         } catch (error) {
             console.error("Failed to summarize conversation:", error);
-            const errorNotification: ChatMessage = {
-                role: 'model',
-                parts: [{ text: `_Sorry, I failed to summarize our conversation. We can continue, but I might lose some context._` }]
-            };
+            const errorNotification: ChatMessage = { role: 'model', parts: [{ text: `_Failed to summarize our conversation._` }] };
             setMessages(prev => [...prev, errorNotification]);
         } finally {
             setIsSummarizing(false);
         }
-    }, [chat, messages, isLoading]);
+    }, [chat, messages, isLoading, constructSystemPrompt, persona]);
     
     const handleClearHistory = async () => {
         if (window.confirm("Are you sure you want to clear the entire chat history? This cannot be undone.")) {
             try {
                 await dbService.clearChatHistory();
                 setMessages([]);
-                setChat(GeminiService.createChat()); // Re-initialize chat session
+                setChat(GeminiService.createChat(constructSystemPrompt(persona)));
             } catch (error) {
                 console.error("Failed to clear chat history:", error);
-                alert("Could not clear chat history. Please try again.");
             }
         }
     };
@@ -163,19 +186,26 @@ const ChatBot: React.FC = () => {
 
 
     return (
-        <FeatureLayout title="Chat Bot" description="Engage in a conversation with Gemini. It remembers your chat history and summarizes long conversations to maintain context.">
+        <FeatureLayout title="Chat Bot" description="Engage in a conversation with your personalized Gemini assistant.">
             <div className="flex flex-col h-full max-w-4xl mx-auto">
                 <div className="flex-grow overflow-y-auto pr-4 space-y-6">
                     {messages.map((msg, index) => (
-                        <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div key={index} className={`flex items-start gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            {msg.role === 'model' && persona.avatarUrl && (
+                                <img src={persona.avatarUrl} alt="Avatar" className="w-8 h-8 rounded-full" />
+                            )}
+                             {msg.role === 'model' && !persona.avatarUrl && (
+                                <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold">G</div>
+                            )}
                             <div className={`p-4 rounded-xl max-w-lg ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-200'}`}>
                                 <MarkdownRenderer content={msg.parts[0].text} />
                             </div>
                         </div>
                     ))}
                     {isLoading && (
-                        <div className="flex justify-start">
-                             <div className="p-4 rounded-xl bg-slate-700">
+                        <div className="flex justify-start items-start gap-3">
+                            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold">G</div>
+                            <div className="p-4 rounded-xl bg-slate-700">
                                 <Spinner text="Gemini is typing..."/>
                              </div>
                         </div>
@@ -184,37 +214,23 @@ const ChatBot: React.FC = () => {
                 </div>
                 <div className="mt-6 flex items-center space-x-2">
                     <Tooltip text="Clear chat history. This cannot be undone.">
-                        <button
-                            onClick={handleClearHistory}
-                            disabled={isLoading || isSummarizing || messages.length === 0}
-                            className="bg-slate-700 hover:bg-red-600/50 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-slate-400 p-3 rounded-full transition-colors"
-                            aria-label="Clear chat history"
-                        >
-                            <TrashIcon />
-                        </button>
+                        <button onClick={handleClearHistory} disabled={isLoading || isSummarizing || messages.length === 0} className="bg-slate-700 hover:bg-red-600/50 p-3 rounded-full transition-colors disabled:opacity-50"><TrashIcon /></button>
                     </Tooltip>
-                    <textarea
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                        placeholder={isSummarizing ? "Summarizing conversation, please wait..." : "Type your message..."}
-                        rows={1}
-                        className="flex-grow p-3 bg-slate-800 border border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none"
-                        disabled={isSummarizing}
-                        aria-label="Chat input"
-                    />
+                    <Tooltip text="Configure the chatbot's persona and personality.">
+                        <button onClick={() => setIsPersonaModalOpen(true)} disabled={isLoading || isSummarizing} className="bg-slate-700 hover:bg-blue-600/50 p-3 rounded-full transition-colors disabled:opacity-50"><SettingsIcon /></button>
+                    </Tooltip>
+                    <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={isSummarizing ? "Summarizing..." : "Type your message..."} rows={1} className="flex-grow p-3 bg-slate-800 border border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none" disabled={isSummarizing} />
                     <Tooltip text="Send your message to the chatbot. You can also press Enter (without Shift) to send." position="top">
-                        <button
-                            onClick={handleSend}
-                            disabled={isLoading || !input.trim() || isSummarizing}
-                            className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white p-3 rounded-full transition-colors"
-                            aria-label="Send message"
-                        >
-                            <SendIcon />
-                        </button>
+                        <button onClick={handleSend} disabled={isLoading || !input.trim() || isSummarizing} className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white p-3 rounded-full transition-colors"><SendIcon /></button>
                     </Tooltip>
                 </div>
             </div>
+            <PersonaConfigModal 
+                isOpen={isPersonaModalOpen}
+                onClose={() => setIsPersonaModalOpen(false)}
+                initialPersona={persona}
+                onSave={handleSavePersona}
+            />
         </FeatureLayout>
     );
 };
