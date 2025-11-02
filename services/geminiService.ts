@@ -1,5 +1,4 @@
-
-import { GoogleGenAI, Type, Modality, Chat, GenerateContentResponse, GroundingChunk, LiveServerMessage } from '@google/genai';
+import { GoogleGenAI, Type, Modality, Chat, GenerateContentResponse, GroundingChunk, LiveServerMessage, FunctionDeclaration } from '@google/genai';
 
 let ai: GoogleGenAI;
 
@@ -128,7 +127,7 @@ export const GeminiService = {
         });
     },
 
-    connectLive: (callbacks: LiveCallbacks) => {
+    connectLive: (callbacks: LiveCallbacks, tools?: { functionDeclarations: FunctionDeclaration[] }[]) => {
         return getAi().live.connect({
             model: 'gemini-2.5-flash-native-audio-preview-09-2025',
             callbacks,
@@ -139,7 +138,12 @@ export const GeminiService = {
                 },
                 inputAudioTranscription: {},
                 outputAudioTranscription: {},
-                systemInstruction: 'You are a friendly and helpful AI assistant. Keep your responses conversational and concise.',
+                systemInstruction: `You are a friendly and helpful AI assistant. You can control the app to help the user.
+- You can search the web and maps.
+- You can analyze images, videos, audio, and documents that the user uploads. If the user asks you to analyze something without uploading it, ask them to upload a file first.
+- You can control the media player (play, pause, stop).
+- Keep your spoken responses conversational and concise. Announce when you are performing an action, like "Searching the web for that now." or "Analyzing the image."`,
+                ...(tools && { tools }),
             },
         });
     }
