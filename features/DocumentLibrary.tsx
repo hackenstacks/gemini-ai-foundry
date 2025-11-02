@@ -2,6 +2,7 @@ import React from 'react';
 import FeatureLayout from './common/FeatureLayout';
 import { formatBytes } from '../utils/helpers';
 import { FileTextIcon } from '../components/Icons';
+import { dbService } from '../services/dbService';
 
 interface DocumentLibraryProps {
     documents: File[];
@@ -10,20 +11,46 @@ interface DocumentLibraryProps {
 
 const DocumentLibrary: React.FC<DocumentLibraryProps> = ({ documents, setDocuments }) => {
     
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = e.target.files;
         if (files) {
             const newFiles = Array.from(files);
-            // Prevent duplicates by creating a Set of existing file names for efficient lookup.
             const existingFileNames = new Set(documents.map(doc => doc.name));
-            // FIX: Explicitly type `nf` as `File` to help TypeScript correctly infer its type from the FileList, resolving the error.
             const uniqueNewFiles = newFiles.filter((nf: File) => !existingFileNames.has(nf.name));
-            setDocuments(prev => [...prev, ...uniqueNewFiles]);
+
+            if (uniqueNewFiles.length > 0) {
+                 try {
+                    await Promise.all(uniqueNewFiles.map(file => dbService.addDocument(file)));
+                    // FIX: The `documents` prop (and thus `prev`) can contain plain objects from IndexedDB
+                    // that are not true `File` instances, causing a type error when concatenated with new `File` objects.
+                    // Reconstruct `File` objects from `prev` to ensure type consistency.
+                    setDocuments(prev => {
+                        const prevAsFiles = prev.map(p => {
+                            if (p instanceof File) {
+                                return p;
+                            }
+                            // Reconstruct File from the plain object-like blob from IndexedDB
+                            const fileLike = p as any;
+                            return new File([fileLike], fileLike.name, { type: fileLike.type, lastModified: fileLike.lastModified });
+                        });
+                        return [...prevAsFiles, ...uniqueNewFiles];
+                    });
+                } catch (error) {
+                    console.error("Failed to add documents to DB:", error);
+                    alert("Could not save all documents. Please try again.");
+                }
+            }
         }
     };
     
-    const handleRemoveDocument = (fileName: string) => {
-        setDocuments(prev => prev.filter(file => file.name !== fileName));
+    const handleRemoveDocument = async (fileName: string) => {
+        try {
+            await dbService.removeDocument(fileName);
+            setDocuments(prev => prev.filter(file => file.name !== fileName));
+        } catch (error) {
+            console.error(`Failed to remove document ${fileName}:`, error);
+            alert("Could not remove document. Please try again.");
+        }
     };
 
     return (

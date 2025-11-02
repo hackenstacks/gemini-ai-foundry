@@ -1,13 +1,13 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { Chat } from '@google/genai';
 import { GeminiService } from '../services/geminiService';
 import type { ChatMessage } from '../types';
 import FeatureLayout from './common/FeatureLayout';
 import MarkdownRenderer from '../components/MarkdownRenderer';
-import { SendIcon } from '../components/Icons';
+import { SendIcon, TrashIcon } from '../components/Icons';
 import Spinner from '../components/Spinner';
 import Tooltip from '../components/Tooltip';
+import { dbService } from '../services/dbService';
 
 const HISTORY_SUMMARY_THRESHOLD = 10; // Summarize after 10 messages (5 user/model pairs)
 const MESSAGES_TO_KEEP_AFTER_SUMMARY = 4; // Keep the last 4 messages (2 pairs)
@@ -21,8 +21,30 @@ const ChatBot: React.FC = () => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        setChat(GeminiService.createChat());
+        const initializeChat = async () => {
+            try {
+                const history = await dbService.getChatHistory();
+                setMessages(history);
+                const chatInstance = GeminiService.createChatWithHistory(
+                    history.map(m => ({ role: m.role, parts: m.parts }))
+                );
+                setChat(chatInstance);
+            } catch (error) {
+                console.error("Failed to load chat history:", error);
+                setChat(GeminiService.createChat());
+            }
+        };
+        initializeChat();
     }, []);
+    
+    useEffect(() => {
+        // Persist messages to IndexedDB whenever they change, if there are any.
+        if (messages.length > 0) {
+            dbService.saveChatHistory(messages).catch(error => {
+                console.error("Failed to save chat history:", error);
+            });
+        }
+    }, [messages]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -55,11 +77,9 @@ const ChatBot: React.FC = () => {
             console.error(error);
              setMessages(prev => {
                 const newMessages = [...prev];
-                // Check if the last message is the model's placeholder
                 if (newMessages.length > 0 && newMessages[newMessages.length - 1].role === 'model' && newMessages[newMessages.length - 1].parts[0].text === '') {
                      newMessages[newMessages.length - 1].parts[0].text = 'Sorry, something went wrong. Please try again.';
                 } else {
-                    // if error happened somewhere else, add a new error message
                     newMessages.push({ role: 'model', parts: [{ text: 'Sorry, something went wrong. Please try again.' }] });
                 }
                 return newMessages;
@@ -121,6 +141,19 @@ const ChatBot: React.FC = () => {
             setIsSummarizing(false);
         }
     }, [chat, messages, isLoading]);
+    
+    const handleClearHistory = async () => {
+        if (window.confirm("Are you sure you want to clear the entire chat history? This cannot be undone.")) {
+            try {
+                await dbService.clearChatHistory();
+                setMessages([]);
+                setChat(GeminiService.createChat()); // Re-initialize chat session
+            } catch (error) {
+                console.error("Failed to clear chat history:", error);
+                alert("Could not clear chat history. Please try again.");
+            }
+        }
+    };
 
     useEffect(() => {
         if (messages.length >= HISTORY_SUMMARY_THRESHOLD && !isSummarizing && !isLoading) {
@@ -150,6 +183,16 @@ const ChatBot: React.FC = () => {
                     <div ref={messagesEndRef} />
                 </div>
                 <div className="mt-6 flex items-center space-x-2">
+                    <Tooltip text="Clear chat history. This cannot be undone.">
+                        <button
+                            onClick={handleClearHistory}
+                            disabled={isLoading || isSummarizing || messages.length === 0}
+                            className="bg-slate-700 hover:bg-red-600/50 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-slate-400 p-3 rounded-full transition-colors"
+                            aria-label="Clear chat history"
+                        >
+                            <TrashIcon />
+                        </button>
+                    </Tooltip>
                     <textarea
                         value={input}
                         onChange={(e) => setInput(e.target.value)}

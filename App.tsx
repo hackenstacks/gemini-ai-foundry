@@ -1,5 +1,4 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Feature, FeatureId } from './types';
 import {
   MessageSquareIcon,
@@ -26,6 +25,7 @@ import GroundingSearch from './features/GroundingSearch';
 import ComplexReasoning from './features/ComplexReasoning';
 import Tooltip from './components/Tooltip';
 import HelpModal from './components/HelpModal';
+import { dbService } from './services/dbService';
 
 
 const features: Feature[] = [
@@ -45,6 +45,18 @@ const App: React.FC = () => {
   const [activeFeature, setActiveFeature] = useState<FeatureId>('live');
   const [documents, setDocuments] = useState<File[]>([]);
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
+  
+  useEffect(() => {
+    const loadDocuments = async () => {
+      try {
+        const storedDocs = await dbService.getDocuments();
+        setDocuments(storedDocs);
+      } catch (error) {
+        console.error("Failed to load documents from DB:", error);
+      }
+    };
+    loadDocuments();
+  }, []);
 
   const renderFeature = () => {
     const feature = features.find(f => f.id === activeFeature);
