@@ -55,6 +55,16 @@ export const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
+export const base64ToBlob = (base64: string, mimeType: string): globalThis.Blob => {
+    const byteCharacters = atob(base64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new window.Blob([byteArray], { type: mimeType });
+};
+
 export const formatBytes = (bytes: number, decimals = 2) => {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
@@ -62,6 +72,35 @@ export const formatBytes = (bytes: number, decimals = 2) => {
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+};
+
+export const readFileContent = async (file: File): Promise<string> => {
+    if (file.type === 'application/pdf') {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const pdfData = new Uint8Array(event.target?.result as ArrayBuffer);
+                    const pdf = await window.pdfjsLib.getDocument({ data: pdfData }).promise;
+                    let textContent = '';
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const text = await page.getTextContent();
+                        textContent += text.items.map((s: any) => s.str).join(' ') + '\n';
+                    }
+                    resolve(textContent);
+                } catch (e) {
+                    reject(e);
+                }
+            };
+            reader.onerror = reject;
+            reader.readAsArrayBuffer(file);
+        });
+    } else if (file.type.startsWith('text/')) {
+        return file.text();
+    } else {
+        return Promise.reject(new Error('Unsupported file type for reading content. Only TXT and PDF are supported.'));
+    }
 };
 
 

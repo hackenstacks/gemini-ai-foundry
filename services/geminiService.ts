@@ -1,16 +1,13 @@
+// FIX: import from @google/genai instead of @google/ai/generativelanguage
 import { GoogleGenAI, Type, Modality, Chat, GenerateContentResponse, GroundingChunk, LiveServerMessage, FunctionDeclaration } from '@google/genai';
 
-let ai: GoogleGenAI;
-
 const getAi = (): GoogleGenAI => {
-    if (!ai) {
-        if (!process.env.API_KEY) {
-            console.error("API_KEY environment variable not set.");
-            throw new Error("API key is missing.");
-        }
-        ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    if (!process.env.API_KEY) {
+        console.error("API_KEY environment variable not set.");
+        throw new Error("API key is missing.");
     }
-    return ai;
+    // Always create a new instance to avoid issues with stale API keys.
+    return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 type LiveCallbacks = {
@@ -139,10 +136,11 @@ export const GeminiService = {
                 inputAudioTranscription: {},
                 outputAudioTranscription: {},
                 systemInstruction: `You are a friendly and helpful AI assistant. You can control the app to help the user.
-- You can search the web and maps.
-- You can analyze images, videos, audio, and documents that the user uploads. If the user asks you to analyze something without uploading it, ask them to upload a file first.
-- You can control the media player (play, pause, stop).
-- Keep your spoken responses conversational and concise. Announce when you are performing an action, like "Searching the web for that now." or "Analyzing the image."`,
+- You have access to a document library. You can see what's available with the 'listDocuments' tool.
+- You can analyze images, videos, audio, and documents. Use the 'analyzeFile' tool. For files in the library, specify the 'fileName'. If the user uploads a file during our conversation, you can analyze it without the 'fileName'. If the user asks to analyze something without uploading or specifying a file, ask them to do so.
+- You can search the web and maps using the 'searchWeb' tool. After a search, you can read the content of one of the results if the user asks. Use the 'readWebsiteContent' tool with a topic from the search result titles.
+- If the user has uploaded a video or audio file, you can control its playback using the 'controlMediaPlayer' tool. You can play, pause, stop, seek to a specific time in seconds, and set the volume between 0.0 and 1.0.
+- Keep your spoken responses conversational and concise. Announce when you are performing an action, like "Searching the web..." or "Okay, reading the article..." or "Let me check that document for you."`,
                 ...(tools && { tools }),
             },
         });

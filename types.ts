@@ -22,6 +22,7 @@ export type FeatureId =
   | 'video-analysis'
   | 'audio-transcription'
   | 'document-analysis'
+  | 'document-library'
   | 'grounding'
   | 'reasoning';
 
@@ -30,7 +31,7 @@ export interface Feature {
   name: string;
   description: string;
   icon: ReactNode;
-  component: React.ComponentType;
+  component: React.ComponentType<any>; // Use 'any' to allow for varied props
 }
 
 declare global {

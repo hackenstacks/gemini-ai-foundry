@@ -1,14 +1,30 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+// FIX: import from @google/genai instead of @google/ai/generativelanguage
 import { LiveServerMessage, LiveSession, FunctionDeclaration, Type, FunctionCall } from '@google/genai';
 import { GeminiService } from '../services/geminiService';
 import FeatureLayout from './common/FeatureLayout';
-import { decode, decodeAudioData, createPcmBlob, fileToBase64, formatBytes } from '../utils/helpers';
+import { decode, decodeAudioData, createPcmBlob, fileToBase64, formatBytes, base64ToBlob, readFileContent } from '../utils/helpers';
 import { MicIcon, GlobeIcon } from '../components/Icons';
 import useGeolocation from '../hooks/useGeolocation';
 import type { GroundingSource } from '../types';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error' | 'closed';
+
+interface SessionData {
+    transcripts: { user: string, model: string }[];
+    analysisResult: string | null;
+    sources: GroundingSource[];
+    fileInfo?: {
+        name: string;
+        type: string;
+        data: string; // base64
+    };
+}
+
+interface LiveConversationProps {
+    documents: File[];
+}
 
 const functionDeclarations: FunctionDeclaration[] = [
     {
@@ -24,12 +40,21 @@ const functionDeclarations: FunctionDeclaration[] = [
         },
     },
     {
+        name: 'listDocuments',
+        parameters: {
+            type: Type.OBJECT,
+            description: 'List the documents available in the document library.',
+            properties: {},
+        },
+    },
+    {
         name: 'analyzeFile',
         parameters: {
             type: Type.OBJECT,
-            description: 'Analyze the content of the file the user has uploaded. Use this for images, videos, audio, and documents.',
+            description: 'Analyze the content of a file. Use fileName for documents in the library, or analyze the file uploaded in this chat.',
             properties: {
                 prompt: { type: Type.STRING, description: 'A detailed question or instruction for the analysis.' },
+                fileName: { type: Type.STRING, description: 'The name of the file from the document library to analyze.' },
             },
             required: ['prompt'],
         },
@@ -38,20 +63,39 @@ const functionDeclarations: FunctionDeclaration[] = [
         name: 'controlMediaPlayer',
         parameters: {
             type: Type.OBJECT,
-            description: 'Controls the audio or video player for the uploaded file.',
+            description: 'Controls the audio or video player. Can play, pause, stop, seek to a timestamp, or set volume.',
             properties: {
                 action: {
                     type: Type.STRING,
-                    description: 'The action to perform: "play", "pause", or "stop".',
-                    enum: ['play', 'pause', 'stop'],
+                    description: 'The action to perform: "play", "pause", "stop", "seek", "setVolume".',
+                    enum: ['play', 'pause', 'stop', 'seek', 'setVolume'],
                 },
+                timestamp: {
+                    type: Type.NUMBER,
+                    description: 'The time in seconds to seek to. Required only for the "seek" action.',
+                },
+                volume: {
+                    type: Type.NUMBER,
+                    description: 'The volume level from 0.0 to 1.0. Required only for the "setVolume" action.',
+                }
             },
             required: ['action'],
         },
     },
+    {
+        name: 'readWebsiteContent',
+        parameters: {
+            type: Type.OBJECT,
+            description: 'Reads the content of a website from the search results and provides a summary. Use a topic from the search result titles as the parameter.',
+            properties: {
+                topic: { type: Type.STRING, description: 'A keyword or topic from the title of the search result to read.' },
+            },
+            required: ['topic'],
+        },
+    },
 ];
 
-const LiveConversation: React.FC = () => {
+const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
     const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
     const [transcripts, setTranscripts] = useState<{ user: string, model: string }[]>([]);
     const [currentInterim, setCurrentInterim] = useState<{ user: string, model: string }>({ user: '', model: '' });
@@ -92,10 +136,6 @@ const LiveConversation: React.FC = () => {
         sourcesRef.current.clear();
         
         setConnectionState('idle');
-        setFile(null);
-        setFileUrl(null);
-        setAnalysisResult(null);
-        setSources([]);
     }, []);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -110,9 +150,75 @@ const LiveConversation: React.FC = () => {
             setFileUrl(URL.createObjectURL(selectedFile));
         }
     };
+    
+    const handleSaveSession = async () => {
+        if (transcripts.length === 0 && !analysisResult && !file) {
+            alert("Nothing to save.");
+            return;
+        }
+
+        const sessionData: SessionData = {
+            transcripts,
+            analysisResult,
+            sources,
+        };
+
+        if (file) {
+            const fileData = await fileToBase64(file);
+            sessionData.fileInfo = {
+                name: file.name,
+                type: file.type,
+                data: fileData,
+            };
+        }
+
+        const blob = new window.Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `gemini-live-session-${new Date().toISOString()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleLoadSession = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const sessionFile = e.target.files?.[0];
+        if (!sessionFile) return;
+
+        handleStopConversation();
+        setFile(null);
+        setFileUrl(null);
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const sessionData: SessionData = JSON.parse(event.target?.result as string);
+                setTranscripts(sessionData.transcripts || []);
+                setAnalysisResult(sessionData.analysisResult || null);
+                setSources(sessionData.sources || []);
+
+                if (sessionData.fileInfo) {
+                    const { data, type, name } = sessionData.fileInfo;
+                    const blob = base64ToBlob(data, type);
+                    const restoredFile = new File([blob], name, { type });
+                    setFile(restoredFile);
+                    setFileUrl(URL.createObjectURL(restoredFile));
+                }
+            } catch (error) {
+                console.error("Failed to load session:", error);
+                alert("Invalid session file.");
+            }
+        };
+        reader.readAsText(sessionFile);
+        // Reset file input to allow loading the same file again
+        e.target.value = '';
+    };
 
     const handleToolCall = async (functionCalls: FunctionCall[]) => {
         setIsProcessingTool(true);
+        setAnalysisResult('');
         const session = await sessionPromiseRef.current;
         if (!session) return;
 
@@ -127,6 +233,7 @@ const LiveConversation: React.FC = () => {
                         const searchResponse = await GeminiService.groundedSearch(args.query, args.useMaps, geo);
                         const searchResultText = searchResponse.text;
                         const groundingChunks = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
+                        setSources([]); // Clear previous sources
                         if (groundingChunks) {
                             const newSources: GroundingSource[] = groundingChunks.map((chunk: any) => ({
                                 uri: chunk.web?.uri || chunk.maps?.uri || '#',
@@ -138,26 +245,46 @@ const LiveConversation: React.FC = () => {
                         setAnalysisResult(searchResultText);
                         result = { status: 'success', summary: searchResultText };
                         break;
+                    
+                    case 'listDocuments':
+                        if (documents.length === 0) {
+                            result = { status: 'success', message: "The document library is currently empty." };
+                        } else {
+                            result = { status: 'success', files: documents.map(f => f.name) };
+                        }
+                        break;
 
                     case 'analyzeFile':
-                        if (!file) {
-                           result = { status: 'error', message: 'No file uploaded. Please ask the user to upload a file first.' };
+                        let fileToAnalyze: File | undefined = undefined;
+
+                        if (args.fileName) {
+                            fileToAnalyze = documents.find(doc => doc.name === args.fileName);
+                            if (!fileToAnalyze) {
+                                result = { status: 'error', message: `Document "${args.fileName}" not found in the library.` };
+                                break;
+                            }
+                        } else if (file) {
+                            fileToAnalyze = file;
+                        }
+
+                        if (!fileToAnalyze) {
+                           result = { status: 'error', message: 'No file specified or uploaded. Please ask the user to upload a file or specify one from the library.' };
                         } else {
                             let analysisText = '';
-                            if (file.type.startsWith('image/')) {
-                                const base64 = await fileToBase64(file);
-                                analysisText = (await GeminiService.analyzeImage(args.prompt, base64, file.type)).text;
-                            } else if (file.type.startsWith('video/')) {
-                                const base64 = await fileToBase64(file);
-                                analysisText = (await GeminiService.analyzeVideo(args.prompt, base64, file.type)).text;
-                            } else if (file.type.startsWith('audio/')) {
-                                const base64 = await fileToBase64(file);
-                                analysisText = (await GeminiService.transcribeAudio(base64, file.type)).text;
-                            } else if (file.type === 'application/pdf' || file.type.startsWith('text/')) {
-                                 const textContent = await file.text(); // simplified for brevity; pdf requires more work.
+                            if (fileToAnalyze.type.startsWith('image/')) {
+                                const base64 = await fileToBase64(fileToAnalyze);
+                                analysisText = (await GeminiService.analyzeImage(args.prompt, base64, fileToAnalyze.type)).text;
+                            } else if (fileToAnalyze.type.startsWith('video/')) {
+                                const base64 = await fileToBase64(fileToAnalyze);
+                                analysisText = (await GeminiService.analyzeVideo(args.prompt, base64, fileToAnalyze.type)).text;
+                            } else if (fileToAnalyze.type.startsWith('audio/')) {
+                                const base64 = await fileToBase64(fileToAnalyze);
+                                analysisText = (await GeminiService.transcribeAudio(base64, fileToAnalyze.type)).text;
+                            } else if (fileToAnalyze.type === 'application/pdf' || fileToAnalyze.type.startsWith('text/')) {
+                                 const textContent = await readFileContent(fileToAnalyze);
                                  analysisText = (await GeminiService.analyzeDocument(textContent, args.prompt)).text;
                             } else {
-                                analysisText = "Unsupported file type.";
+                                analysisText = `Unsupported file type for analysis: ${fileToAnalyze.type}.`;
                             }
                             setAnalysisResult(analysisText);
                             result = { status: 'success', summary: analysisText };
@@ -166,21 +293,74 @@ const LiveConversation: React.FC = () => {
                     
                     case 'controlMediaPlayer':
                         if (mediaRef.current) {
-                            if (args.action === 'play') mediaRef.current.play();
-                            else if (args.action === 'pause') mediaRef.current.pause();
-                            else if (args.action === 'stop') {
-                                mediaRef.current.pause();
-                                mediaRef.current.currentTime = 0;
+                            switch(args.action) {
+                                case 'play': mediaRef.current.play(); break;
+                                case 'pause': mediaRef.current.pause(); break;
+                                case 'stop':
+                                    mediaRef.current.pause();
+                                    mediaRef.current.currentTime = 0;
+                                    break;
+                                case 'seek':
+                                    if (typeof args.timestamp === 'number') {
+                                        mediaRef.current.currentTime = args.timestamp;
+                                    }
+                                    break;
+                                case 'setVolume':
+                                     if (typeof args.volume === 'number' && args.volume >= 0 && args.volume <= 1) {
+                                        mediaRef.current.volume = args.volume;
+                                    }
+                                    break;
                             }
                             result = { status: 'success', action: args.action };
                         } else {
                             result = { status: 'error', message: 'No media is loaded.' };
                         }
                         break;
+
+                    case 'readWebsiteContent':
+                        if (sources.length === 0) {
+                            result = { status: 'error', message: 'No websites have been searched yet. Please perform a web search first.' };
+                            break;
+                        }
+                        const topic = (args.topic || '').toLowerCase();
+                        const targetSource = sources.find(s => s.title.toLowerCase().includes(topic));
+
+                        if (!targetSource) {
+                            result = { status: 'error', message: `Could not find a search result related to "${args.topic}". Please be more specific or try another topic from the search results.` };
+                            break;
+                        }
+                        
+                        try {
+                            const response = await fetch(targetSource.uri);
+                            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                            
+                            const html = await response.text();
+                            const textContent = html.replace(/<style[^>]*>.*<\/style>/gs, '')
+                                                    .replace(/<script[^>]*>.*<\/script>/gs, '')
+                                                    .replace(/<[^>]+>/g, ' ')
+                                                    .replace(/\s+/g, ' ').trim();
+
+                            if (textContent.length < 50) {
+                                 result = { status: 'error', message: 'Could not extract enough readable text from the website.' };
+                                 break;
+                            }
+
+                            const summaryResponse = await GeminiService.analyzeDocument(textContent.substring(0, 30000), 'Please summarize the following website content concisely.');
+                            const summary = summaryResponse.text;
+                            setAnalysisResult(summary);
+                            result = { status: 'success', summary: summary };
+
+                        } catch (e) {
+                             const errorMessage = 'I was unable to access that website due to web security restrictions (CORS). I cannot read the content from every page.';
+                             setAnalysisResult(errorMessage);
+                             result = { status: 'error', message: errorMessage };
+                        }
+                        break;
                 }
             } catch (e: any) {
                 console.error(`Error executing tool ${name}:`, e);
                 result = { status: 'error', message: e.message };
+                setAnalysisResult(`Error: ${e.message}`);
             }
             
             session.sendToolResponse({
@@ -194,8 +374,6 @@ const LiveConversation: React.FC = () => {
         setConnectionState('connecting');
         setTranscripts([]);
         setCurrentInterim({ user: '', model: '' });
-        setAnalysisResult(null);
-        setSources([]);
 
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -278,33 +456,36 @@ const LiveConversation: React.FC = () => {
     }, [handleStopConversation]);
 
     const renderMedia = () => {
-        if (!file || !fileUrl) return <p className="text-slate-500 text-center">Upload a file to analyze.</p>;
+        if (!file || !fileUrl) return <p className="text-slate-500 text-center">Upload a file for temporary analysis.</p>;
         if (file.type.startsWith("image/")) return <img src={fileUrl} alt={file.name} className="max-h-full max-w-full object-contain rounded-lg" />;
         if (file.type.startsWith("video/")) return <video ref={mediaRef} src={fileUrl} controls className="w-full rounded-lg" />;
         if (file.type.startsWith("audio/")) return <audio ref={mediaRef} src={fileUrl} controls className="w-full" />;
-        return <div className="text-center text-slate-300"> <p className="font-bold">{file.name}</p> <p className="text-sm">{formatBytes(file.size)}</p> </div>;
+        return <div className="text-center text-slate-300"> <p className="font-bold">{file.name}</p> <p className="text-sm">{formatBytes(file.size)}</p> d></div>;
     };
 
     return (
         <FeatureLayout title="Live Conversation" description="Speak with a multimodal Gemini assistant. Ask it to search, analyze files, and more.">
             <div className="grid md:grid-cols-2 gap-6 h-full overflow-hidden">
                 <div className="flex flex-col space-y-4 overflow-hidden">
-                    <div className="flex-shrink-0 flex items-center justify-center space-x-4">
+                    <div className="flex-shrink-0 flex items-center justify-center flex-wrap gap-2">
                          {connectionState !== 'connected' ? (
-                            <button onClick={handleStartConversation} disabled={connectionState === 'connecting'} className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-full flex items-center space-x-2 transition-colors disabled:bg-slate-600">
+                            <button onClick={handleStartConversation} disabled={connectionState === 'connecting'} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors disabled:bg-slate-600">
                                 <MicIcon />
                                 <span>{connectionState === 'connecting' ? 'Connecting...' : 'Start Conversation'}</span>
                             </button>
                         ) : (
-                            <button onClick={handleStopConversation} className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full flex items-center space-x-2 transition-colors">
+                            <button onClick={handleStopConversation} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors">
                                 <MicIcon />
                                 <span>Stop Conversation</span>
                             </button>
                         )}
                          <input type="file" id="file-upload" className="hidden" onChange={handleFileChange} />
-                         <label htmlFor="file-upload" className="bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 px-6 rounded-full cursor-pointer transition-colors">
+                         <label htmlFor="file-upload" className="bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 px-4 rounded-lg cursor-pointer transition-colors text-center">
                              {file ? "Change File" : "Upload File"}
                          </label>
+                         <button onClick={handleSaveSession} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Save Session</button>
+                         <input type="file" id="load-session" className="hidden" accept=".json" onChange={handleLoadSession} />
+                         <label htmlFor="load-session" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg cursor-pointer transition-colors text-center">Load Session</label>
                     </div>
                     <div className="flex-grow bg-slate-800/50 rounded-lg p-4 flex items-center justify-center min-h-0">{renderMedia()}</div>
                 </div>
