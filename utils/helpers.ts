@@ -1,4 +1,11 @@
 
+// FIX: Add a global type declaration for window.pdfjsLib to resolve TypeScript error.
+declare global {
+    interface Window {
+        pdfjsLib: any;
+    }
+}
+
 import type { Blob } from '@google/genai';
 // Base64 encoding function
 export function encode(bytes: Uint8Array): string {

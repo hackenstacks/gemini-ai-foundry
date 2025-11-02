@@ -21,10 +21,10 @@ export type FeatureId =
   | 'image-gen'
   | 'video-analysis'
   | 'audio-transcription'
-  | 'document-analysis'
-  | 'document-library'
+  | 'file-library'
   | 'grounding'
-  | 'reasoning';
+  | 'reasoning'
+  | 'settings';
 
 export interface Feature {
   id: FeatureId;
@@ -32,10 +32,4 @@ export interface Feature {
   description: string;
   icon: ReactNode;
   component: React.ComponentType<any>; // Use 'any' to allow for varied props
-}
-
-declare global {
-    interface Window {
-        pdfjsLib: any;
-    }
 }

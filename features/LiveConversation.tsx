@@ -10,6 +10,7 @@ import useGeolocation from '../hooks/useGeolocation';
 import type { GroundingSource } from '../types';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import Tooltip from '../components/Tooltip';
+import { StoredFile } from '../services/dbService';
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error' | 'closed' | 'reconnecting';
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -26,7 +27,7 @@ interface SessionData {
 }
 
 interface LiveConversationProps {
-    documents: File[];
+    documents: StoredFile[];
 }
 
 const functionDeclarations: FunctionDeclaration[] = [
@@ -46,7 +47,7 @@ const functionDeclarations: FunctionDeclaration[] = [
         name: 'listDocuments',
         parameters: {
             type: Type.OBJECT,
-            description: 'List the documents available in the document library.',
+            description: 'List the documents available in the file library.',
             properties: {},
         },
     },
@@ -57,7 +58,7 @@ const functionDeclarations: FunctionDeclaration[] = [
             description: 'Analyze the content of a file. Use fileName for documents in the library, or analyze the file uploaded in this chat.',
             properties: {
                 prompt: { type: Type.STRING, description: 'A detailed question or instruction for the analysis.' },
-                fileName: { type: Type.STRING, description: 'The name of the file from the document library to analyze.' },
+                fileName: { type: Type.STRING, description: 'The name of the file from the file library to analyze.' },
             },
             required: ['prompt'],
         },
@@ -225,6 +226,8 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         setAnalysisResult('');
         const session = await sessionPromiseRef.current;
         if (!session) return;
+        
+        const activeDocuments = documents.filter(doc => !doc.isArchived);
 
         for (const fc of functionCalls) {
             const { name, args } = fc;
@@ -251,22 +254,26 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                         break;
                     
                     case 'listDocuments':
-                        if (documents.length === 0) {
-                            result = { status: 'success', message: "The document library is currently empty." };
+                        if (activeDocuments.length === 0) {
+                            result = { status: 'success', message: "The file library is currently empty." };
                         } else {
-                            result = { status: 'success', files: documents.map(f => f.name) };
+                            result = { status: 'success', files: activeDocuments.map(f => f.name) };
                         }
                         break;
 
                     case 'analyzeFile':
                         let fileToAnalyze: File | undefined = undefined;
-
+                        let fileSource: StoredFile | undefined = undefined;
+                        
                         if (args.fileName) {
-                            fileToAnalyze = documents.find(doc => doc.name === args.fileName);
-                            if (!fileToAnalyze) {
-                                result = { status: 'error', message: `Document "${args.fileName}" not found in the library.` };
+                            fileSource = activeDocuments.find(doc => doc.name === args.fileName);
+                            if (!fileSource) {
+                                result = { status: 'error', message: `File "${args.fileName}" not found in the library.` };
                                 break;
                             }
+                            const blob = base64ToBlob(fileSource.data, fileSource.type);
+                            fileToAnalyze = new File([blob], fileSource.name, {type: fileSource.type});
+
                         } else if (file) {
                             fileToAnalyze = file;
                         }
@@ -471,7 +478,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
             console.error("Failed to start conversation:", error);
             setConnectionState('error');
         }
-    }, [reconnectAttempts, handleStopConversation]);
+    }, [reconnectAttempts, handleStopConversation, documents]);
     
     useEffect(() => {
         return () => { handleStopConversation(); };

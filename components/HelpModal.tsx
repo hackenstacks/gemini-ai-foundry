@@ -10,11 +10,11 @@ interface HelpModalProps {
 const helpContent = [
     {
       title: 'Live Conversation',
-      content: 'Engage in a real-time voice conversation with Gemini. You can ask it to perform various tasks like searching the web, analyzing uploaded files, or controlling media playback. Just click "Start Conversation" and speak naturally. You can upload an image, video, or audio file for the AI to analyze during the conversation.'
+      content: 'Engage in a real-time voice conversation with Gemini. You can ask it to perform various tasks like searching the web, analyzing uploaded files, or controlling media playback. Just click "Start Conversation" and speak naturally. You can upload a temporary file or ask it to analyze a file from your File Library.'
     },
     {
       title: 'Chat',
-      content: 'Have a classic text-based chat with Gemini. It remembers the context of your conversation. For very long chats, it will automatically summarize the history to ensure it doesn\'t forget earlier parts of the discussion.'
+      content: 'Have a classic text-based chat with Gemini. It remembers the context of your conversation, which is securely stored and encrypted in your browser. For very long chats, it will automatically summarize the history to ensure it doesn\'t forget earlier parts of the discussion.'
     },
     {
       title: 'Complex Reasoning',
@@ -41,12 +41,12 @@ const helpContent = [
       content: 'Upload an audio file and Gemini will transcribe the spoken words into text.'
     },
     {
-      title: 'Document Analysis',
-      content: 'Upload a TXT or PDF file to have Gemini analyze its content. You can ask for summaries, key takeaways, or specific information within the document.'
+      title: 'File Library',
+      content: 'This is your personal, encrypted file cabinet. Upload documents, images, audio, or video files here, and they become persistently available for the AI to access and analyze in other features, like the Live Conversation. You can also archive files to hide them from the active view.'
     },
     {
-      title: 'Document Library',
-      content: 'This is your personal file cabinet. Upload documents here, and they become available for the AI to access and analyze in other features, like the Live Conversation. This allows you to build a knowledge base for the AI to work with.'
+        title: 'Settings',
+        content: 'Manage your application data. You can export a full, encrypted backup of your file library and chat history. This creates a downloadable file that you can use to restore your data on any browser or machine using the import function.'
     }
 ];
 

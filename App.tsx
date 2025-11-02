@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import type { Feature, FeatureId } from './types';
 import {
@@ -5,13 +6,13 @@ import {
   ImageIcon,
   VideoIcon,
   MicIcon,
-  FileTextIcon,
   GlobeIcon,
   BrainCircuitIcon,
   SparklesIcon,
   RadioTowerIcon,
   FilesIcon,
-  HelpCircleIcon
+  HelpCircleIcon,
+  SettingsIcon
 } from './components/Icons';
 import LiveConversation from './features/LiveConversation';
 import ChatBot from './features/ChatBot';
@@ -19,13 +20,13 @@ import ImageAnalysis from './features/ImageAnalysis';
 import ImageGeneration from './features/ImageGeneration';
 import VideoAnalysis from './features/VideoAnalysis';
 import AudioTranscription from './features/AudioTranscription';
-import DocumentAnalysis from './features/DocumentAnalysis';
-import DocumentLibrary from './features/DocumentLibrary';
+import FileLibrary from './features/FileLibrary';
 import GroundingSearch from './features/GroundingSearch';
 import ComplexReasoning from './features/ComplexReasoning';
+import Settings from './features/Settings';
 import Tooltip from './components/Tooltip';
 import HelpModal from './components/HelpModal';
-import { dbService } from './services/dbService';
+import { dbService, StoredFile } from './services/dbService';
 
 
 const features: Feature[] = [
@@ -37,13 +38,13 @@ const features: Feature[] = [
   { id: 'image-gen', name: 'Image Generation', description: 'Create stunning visuals from text.', icon: <SparklesIcon />, component: ImageGeneration },
   { id: 'video-analysis', name: 'Video Analysis', description: 'Extract insights from video files.', icon: <VideoIcon />, component: VideoAnalysis },
   { id: 'audio-transcription', name: 'Audio Transcription', description: 'Transcribe spoken words from audio files.', icon: <MicIcon />, component: AudioTranscription },
-  { id: 'document-analysis', name: 'Document Analysis', description: 'Summarize and analyze single documents.', icon: <FileTextIcon />, component: DocumentAnalysis },
-  { id: 'document-library', name: 'Document Library', description: 'Manage documents for AI analysis.', icon: <FilesIcon />, component: DocumentLibrary },
+  { id: 'file-library', name: 'File Library', description: 'Manage and archive your encrypted local files.', icon: <FilesIcon />, component: FileLibrary },
+  { id: 'settings', name: 'Settings', description: 'Manage application settings and data.', icon: <SettingsIcon />, component: Settings },
 ];
 
 const App: React.FC = () => {
   const [activeFeature, setActiveFeature] = useState<FeatureId>('live');
-  const [documents, setDocuments] = useState<File[]>([]);
+  const [documents, setDocuments] = useState<StoredFile[]>([]);
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   
   useEffect(() => {
@@ -65,7 +66,7 @@ const App: React.FC = () => {
     const props: any = { key: feature.id };
     
     // Pass shared document state to relevant features
-    if (feature.id === 'live' || feature.id === 'document-library') {
+    if (feature.id === 'live' || feature.id === 'file-library') {
       props.documents = documents;
       props.setDocuments = setDocuments;
     }
