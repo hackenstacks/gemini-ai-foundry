@@ -1,0 +1,8 @@
+{
+  "name": "Gemini AI Foundry",
+  "description": "A comprehensive AI assistant application showcasing the power of the Gemini API, including real-time conversation, multi-modal analysis (text, image, video, audio, documents), advanced reasoning, and grounded generation.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ]
+}
