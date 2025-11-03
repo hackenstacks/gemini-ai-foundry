@@ -82,6 +82,7 @@ const ChatBot: React.FC = () => {
     }, [initializeChat]);
     
     useEffect(() => {
+        // Do not save an empty initial message list
         if (messages.length > 0) {
             dbService.saveChatHistory(messages).catch(console.error);
         }

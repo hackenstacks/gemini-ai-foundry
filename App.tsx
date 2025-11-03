@@ -27,6 +27,8 @@ import Settings from './features/Settings';
 import Tooltip from './components/Tooltip';
 import HelpModal from './components/HelpModal';
 import { dbService, StoredFile } from './services/dbService';
+import Auth from './components/Auth';
+import Spinner from './components/Spinner';
 
 
 const features: Feature[] = [
@@ -43,11 +45,22 @@ const features: Feature[] = [
 ];
 
 const App: React.FC = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [activeFeature, setActiveFeature] = useState<FeatureId>('live');
   const [documents, setDocuments] = useState<StoredFile[]>([]);
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   
   useEffect(() => {
+    // This effect simply moves past the initial "checking" state.
+    // The Auth component itself is responsible for determining if it should
+    // show a login or a setup form.
+    setIsCheckingAuth(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
     const loadDocuments = async () => {
       try {
         const storedDocs = await dbService.getDocuments();
@@ -57,7 +70,20 @@ const App: React.FC = () => {
       }
     };
     loadDocuments();
-  }, []);
+  }, [isAuthenticated]);
+
+
+  if (isCheckingAuth) {
+    return (
+      <div className="flex flex-col h-screen bg-slate-900 text-slate-100 items-center justify-center">
+        <Spinner text="Initializing Secure Session..." />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Auth onLoginSuccess={() => setIsAuthenticated(true)} />;
+  }
 
   const renderFeature = () => {
     const feature = features.find(f => f.id === activeFeature);
