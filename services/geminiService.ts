@@ -214,14 +214,14 @@ export const GeminiService = {
         });
     },
 
-    connectLive: (callbacks: LiveCallbacks, tools?: { functionDeclarations: FunctionDeclaration[] }[]) => {
+    connectLive: (callbacks: LiveCallbacks, voiceName: string, tools?: { functionDeclarations: FunctionDeclaration[] }[]) => {
         return getAi().live.connect({
             model: 'gemini-2.5-flash-native-audio-preview-09-2025',
             callbacks,
             config: {
                 responseModalities: [Modality.AUDIO],
                 speechConfig: {
-                    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName || 'Zephyr' } },
                 },
                 inputAudioTranscription: {},
                 outputAudioTranscription: {},

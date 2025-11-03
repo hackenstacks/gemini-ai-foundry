@@ -4,12 +4,12 @@ import { LiveServerMessage, LiveSession, FunctionDeclaration, Type, FunctionCall
 import { GeminiService } from '../services/geminiService';
 import FeatureLayout from './common/FeatureLayout';
 import { decode, decodeAudioData, createPcmBlob, fileToBase64, formatBytes, base64ToBlob, readFileContent } from '../utils/helpers';
-import { MicIcon, GlobeIcon } from '../components/Icons';
+import { MicIcon, GlobeIcon, Volume2Icon } from '../components/Icons';
 import useGeolocation from '../hooks/useGeolocation';
 import type { GroundingSource } from '../types';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import Tooltip from '../components/Tooltip';
-import { StoredFile } from '../services/dbService';
+import { dbService, StoredFile } from '../services/dbService';
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error' | 'closed' | 'reconnecting';
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -122,6 +122,8 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
     const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
     const [sources, setSources] = useState<GroundingSource[]>([]);
     const [isProcessingTool, setIsProcessingTool] = useState(false);
+    const [micGain, setMicGain] = useState(1.0);
+    const [outputGain, setOutputGain] = useState(1.0);
 
     const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
@@ -130,10 +132,24 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
     const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
     const location = useGeolocation();
+    const micGainNodeRef = useRef<GainNode | null>(null);
+    const outputGainNodeRef = useRef<GainNode | null>(null);
 
     const nextStartTimeRef = useRef(0);
     const sourcesRef = useRef(new Set<AudioBufferSourceNode>());
     
+    useEffect(() => {
+        if (micGainNodeRef.current) {
+            micGainNodeRef.current.gain.value = micGain;
+        }
+    }, [micGain]);
+
+    useEffect(() => {
+        if (outputGainNodeRef.current) {
+            outputGainNodeRef.current.gain.value = outputGain;
+        }
+    }, [outputGain]);
+
     const clearOutputs = () => {
         setAnalysisResult(null);
         setSources([]);
@@ -149,6 +165,12 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         
         scriptProcessorRef.current?.disconnect();
         scriptProcessorRef.current = null;
+        
+        micGainNodeRef.current?.disconnect();
+        micGainNodeRef.current = null;
+
+        outputGainNodeRef.current?.disconnect();
+        outputGainNodeRef.current = null;
         
         audioContextRef.current?.close().catch(console.error);
         audioContextRef.current = null;
@@ -391,6 +413,13 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
             
             const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
             outputAudioContextRef.current = outputAudioContext;
+
+            const outputGainNode = outputAudioContext.createGain();
+            outputGainNode.gain.value = outputGain;
+            outputGainNodeRef.current = outputGainNode;
+            outputGainNode.connect(outputAudioContext.destination);
+
+            const voiceName = await dbService.getVoicePreference() || 'Zephyr';
             
             const sessionPromise = GeminiService.connectLive({
                 onopen: () => {
@@ -400,6 +429,10 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                     const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
                     scriptProcessorRef.current = scriptProcessor;
 
+                    const micGainNode = inputAudioContext.createGain();
+                    micGainNode.gain.value = micGain;
+                    micGainNodeRef.current = micGainNode;
+
                     scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
                         const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
                         const pcmBlob = createPcmBlob(inputData);
@@ -407,7 +440,8 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                             session.sendRealtimeInput({ media: pcmBlob });
                         });
                     };
-                    source.connect(scriptProcessor);
+                    source.connect(micGainNode);
+                    micGainNode.connect(scriptProcessor);
                     scriptProcessor.connect(inputAudioContext.destination);
                 },
                 onmessage: async (message: LiveServerMessage) => {
@@ -429,13 +463,13 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                         });
                     }
                     const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-                    if (base64Audio && outputAudioContextRef.current) {
+                    if (base64Audio && outputAudioContextRef.current && outputGainNodeRef.current) {
                         const ctx = outputAudioContextRef.current;
                         nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
                         const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
                         const source = ctx.createBufferSource();
                         source.buffer = audioBuffer;
-                        source.connect(ctx.destination);
+                        source.connect(outputGainNodeRef.current);
                         source.addEventListener('ended', () => sourcesRef.current.delete(source));
                         source.start(nextStartTimeRef.current);
                         nextStartTimeRef.current += audioBuffer.duration;
@@ -462,7 +496,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
                         setConnectionState('closed');
                     }
                 },
-            }, [{ functionDeclarations }]);
+            }, voiceName, [{ functionDeclarations }]);
 
             sessionPromiseRef.current = sessionPromise;
 
@@ -470,7 +504,7 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
             console.error("Failed to start conversation:", error);
             setConnectionState('error');
         }
-    }, [reconnectAttempts, handleStopConversation, documents]);
+    }, [reconnectAttempts, handleStopConversation, documents, micGain, outputGain]);
     
     useEffect(() => {
         return () => { handleStopConversation(); };
@@ -498,35 +532,50 @@ const LiveConversation: React.FC<LiveConversationProps> = ({ documents }) => {
         <FeatureLayout title="Live Conversation" description="Speak with a multimodal Gemini assistant. Ask it to search, analyze files, and more.">
             <div className="grid md:grid-cols-2 gap-6 h-full overflow-hidden">
                 <div className="flex flex-col space-y-4 overflow-hidden">
-                    <div className="flex-shrink-0 flex items-center justify-center flex-wrap gap-2">
-                        {connectionState !== 'connected' ? (
-                            <Tooltip text="Begin a real-time voice conversation with the AI. Your microphone will be activated.">
-                                <button onClick={() => handleStartConversation()} disabled={isBusy} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors disabled:bg-slate-600">
-                                    <MicIcon />
-                                    <span>{isBusy ? 'Connecting...' : 'Start Conversation'}</span>
-                                </button>
-                            </Tooltip>
-                        ) : (
-                            <Tooltip text="Stop the current voice conversation and disconnect from the AI.">
-                                <button onClick={handleStopConversation} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors">
-                                    <MicIcon />
-                                    <span>Stop Conversation</span>
-                                </button>
-                            </Tooltip>
-                        )}
-                         <input type="file" id="file-upload" className="hidden" onChange={handleFileChange} disabled={isBusy} />
-                         <Tooltip text="Upload an image, video, audio, or document file. You can then ask the AI to analyze it during your conversation.">
-                             <label htmlFor="file-upload" className={`bg-slate-700 text-white font-bold py-2 px-4 rounded-lg transition-colors text-center ${isBusy ? 'cursor-not-allowed bg-slate-600' : 'cursor-pointer hover:bg-slate-600'}`}>
-                                 {file ? "Change File" : "Upload File"}
-                             </label>
-                         </Tooltip>
-                         <Tooltip text="Download a JSON file containing the full conversation transcript and any uploaded file data.">
-                            <button onClick={handleSaveSession} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Save Session</button>
-                         </Tooltip>
-                         <input type="file" id="load-session" className="hidden" accept=".json" onChange={handleLoadSession} disabled={isBusy} />
-                         <Tooltip text="Load a conversation from a previously saved JSON session file.">
-                            <label htmlFor="load-session" className={`bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-colors text-center ${isBusy ? 'cursor-not-allowed bg-slate-600' : 'cursor-pointer hover:bg-blue-700'}`}>Load Session</label>
-                         </Tooltip>
+                    <div className="flex-shrink-0 flex flex-col gap-4">
+                        <div className="flex items-center justify-center flex-wrap gap-2">
+                            {connectionState !== 'connected' ? (
+                                <Tooltip text="Begin a real-time voice conversation with the AI. Your microphone will be activated.">
+                                    <button onClick={() => handleStartConversation()} disabled={isBusy} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors disabled:bg-slate-600">
+                                        <MicIcon />
+                                        <span>{isBusy ? 'Connecting...' : 'Start Conversation'}</span>
+                                    </button>
+                                </Tooltip>
+                            ) : (
+                                <Tooltip text="Stop the current voice conversation and disconnect from the AI.">
+                                    <div className="relative">
+                                        <button onClick={handleStopConversation} className="relative z-10 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg flex items-center space-x-2 transition-colors">
+                                            <MicIcon />
+                                            <span>Stop Conversation</span>
+                                        </button>
+                                        <div className="absolute top-0 left-0 w-full h-full rounded-lg bg-green-500/50 animate-ping"></div>
+                                    </div>
+                                </Tooltip>
+                            )}
+                             <input type="file" id="file-upload" className="hidden" onChange={handleFileChange} disabled={isBusy} />
+                             <Tooltip text="Upload an image, video, audio, or document file. You can then ask the AI to analyze it during your conversation.">
+                                 <label htmlFor="file-upload" className={`bg-slate-700 text-white font-bold py-2 px-4 rounded-lg transition-colors text-center ${isBusy ? 'cursor-not-allowed bg-slate-600' : 'cursor-pointer hover:bg-slate-600'}`}>
+                                     {file ? "Change File" : "Upload File"}
+                                 </label>
+                             </Tooltip>
+                             <Tooltip text="Download a JSON file containing the full conversation transcript and any uploaded file data.">
+                                <button onClick={handleSaveSession} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Save Session</button>
+                             </Tooltip>
+                             <input type="file" id="load-session" className="hidden" accept=".json" onChange={handleLoadSession} disabled={isBusy} />
+                             <Tooltip text="Load a conversation from a previously saved JSON session file.">
+                                <label htmlFor="load-session" className={`bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-colors text-center ${isBusy ? 'cursor-not-allowed bg-slate-600' : 'cursor-pointer hover:bg-blue-700'}`}>Load Session</label>
+                             </Tooltip>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-800/50 p-3 rounded-lg">
+                            <div className="flex items-center space-x-2 text-slate-300">
+                                <Tooltip text="Microphone Input Volume"><MicIcon /></Tooltip>
+                                <input type="range" id="mic-gain" min="0" max="1.5" step="0.05" value={micGain} onChange={e => setMicGain(parseFloat(e.target.value))} className="w-full" />
+                            </div>
+                            <div className="flex items-center space-x-2 text-slate-300">
+                                <Tooltip text="AI Output Volume"><Volume2Icon /></Tooltip>
+                                <input type="range" id="output-gain" min="0" max="1.5" step="0.05" value={outputGain} onChange={e => setOutputGain(parseFloat(e.target.value))} className="w-full" />
+                            </div>
+                        </div>
                     </div>
                     <div className="flex-grow bg-slate-800/50 rounded-lg p-4 flex items-center justify-center min-h-0">{renderMedia()}</div>
                 </div>

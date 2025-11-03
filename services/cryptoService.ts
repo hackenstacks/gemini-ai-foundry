@@ -1,4 +1,3 @@
-
 import { encode, decode } from '../utils/helpers';
 
 const KEY_STORAGE_NAME = 'gemini-ai-studio-crypto-key';
@@ -37,7 +36,8 @@ const getKey = async (): Promise<CryptoKey> => {
 };
 
 export const cryptoService = {
-    async encrypt(data: object): Promise<string> {
+    // FIX: Changed `data: object` to `data: any` to allow encrypting primitives like strings.
+    async encrypt(data: any): Promise<string> {
         const key = await getKey();
         const iv = window.crypto.getRandomValues(new Uint8Array(12));
         const dataString = JSON.stringify(data);

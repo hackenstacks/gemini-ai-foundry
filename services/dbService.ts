@@ -57,7 +57,8 @@ const openDB = (): Promise<IDBDatabase> => {
 };
 
 const CHAT_HISTORY_KEY = 'current_chat';
-const PERSONA_KEY = 'chatbot_persona';
+const PERSONAS_KEY = 'chatbot_personas';
+const VOICE_PREF_KEY = 'voice_preference';
 
 export const dbService = {
   async addDocuments(files: StoredFile[]): Promise<void> {
@@ -168,39 +169,74 @@ export const dbService = {
     });
   },
   
-  async savePersona(persona: Persona): Promise<void> {
+  async savePersonas(personas: Persona[]): Promise<void> {
     const db = await openDB();
     const transaction = db.transaction(SETTINGS_STORE, 'readwrite');
     const store = transaction.objectStore(SETTINGS_STORE);
-    const encryptedPersona = await cryptoService.encrypt(persona);
-    store.put({ id: PERSONA_KEY, encryptedPersona });
+    const encryptedPersonas = await cryptoService.encrypt(personas);
+    store.put({ id: PERSONAS_KEY, encryptedPersonas });
     return new Promise((resolve, reject) => {
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
     });
   },
 
-  async getPersona(): Promise<Persona | null> {
+  async getPersonas(): Promise<Persona[]> {
     const db = await openDB();
     const transaction = db.transaction(SETTINGS_STORE, 'readonly');
     const store = transaction.objectStore(SETTINGS_STORE);
-    const request = store.get(PERSONA_KEY);
+    const request = store.get(PERSONAS_KEY);
     return new Promise((resolve, reject) => {
         request.onsuccess = async () => {
-            if (request.result && request.result.encryptedPersona) {
+            if (request.result && request.result.encryptedPersonas) {
                 try {
-                    const decrypted = await cryptoService.decrypt<Persona>(request.result.encryptedPersona);
+                    const decrypted = await cryptoService.decrypt<Persona[]>(request.result.encryptedPersonas);
                     resolve(decrypted);
                 } catch (error) {
-                    console.error("Could not decrypt persona:", error);
-                    resolve(null);
+                    console.error("Could not decrypt personas:", error);
+                    resolve([]);
                 }
             } else {
-                resolve(null);
+                resolve([]);
             }
         };
         request.onerror = () => reject(request.error);
     });
+  },
+
+  async saveVoicePreference(voiceName: string): Promise<void> {
+      const db = await openDB();
+      const transaction = db.transaction(SETTINGS_STORE, 'readwrite');
+      const store = transaction.objectStore(SETTINGS_STORE);
+      const encryptedVoice = await cryptoService.encrypt(voiceName);
+      store.put({ id: VOICE_PREF_KEY, encryptedVoice });
+      return new Promise((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+      });
+  },
+
+  async getVoicePreference(): Promise<string | null> {
+      const db = await openDB();
+      const transaction = db.transaction(SETTINGS_STORE, 'readonly');
+      const store = transaction.objectStore(SETTINGS_STORE);
+      const request = store.get(VOICE_PREF_KEY);
+      return new Promise((resolve, reject) => {
+          request.onsuccess = async () => {
+              if (request.result && request.result.encryptedVoice) {
+                  try {
+                      const decrypted = await cryptoService.decrypt<string>(request.result.encryptedVoice);
+                      resolve(decrypted);
+                  } catch (error) {
+                      console.error("Could not decrypt voice preference:", error);
+                      resolve(null);
+                  }
+              } else {
+                  resolve(null);
+              }
+          };
+          request.onerror = () => reject(request.error);
+      });
   },
   
   async exportData(): Promise<object> {
@@ -211,12 +247,14 @@ export const dbService = {
       
       const filesRequest = fileTransaction.objectStore(FILE_STORE).getAll();
       const chatRequest = chatTransaction.objectStore(CHAT_STORE).get(CHAT_HISTORY_KEY);
-      const personaRequest = settingsTransaction.objectStore(SETTINGS_STORE).get(PERSONA_KEY);
+      const personasRequest = settingsTransaction.objectStore(SETTINGS_STORE).get(PERSONAS_KEY);
+      const voiceRequest = settingsTransaction.objectStore(SETTINGS_STORE).get(VOICE_PREF_KEY);
       
-      const [files, chatResult, personaResult, key] = await Promise.all([
+      const [files, chatResult, personasResult, voiceResult, key] = await Promise.all([
           new Promise((res, rej) => { filesRequest.onsuccess = () => res(filesRequest.result); filesRequest.onerror = () => rej(filesRequest.error); }),
           new Promise((res, rej) => { chatRequest.onsuccess = () => res(chatRequest.result); chatRequest.onerror = () => rej(chatRequest.error); }),
-          new Promise((res, rej) => { personaRequest.onsuccess = () => res(personaRequest.result); personaRequest.onerror = () => rej(personaRequest.error); }),
+          new Promise((res, rej) => { personasRequest.onsuccess = () => res(personasRequest.result); personasRequest.onerror = () => rej(personasRequest.error); }),
+          new Promise((res, rej) => { voiceRequest.onsuccess = () => res(voiceRequest.result); voiceRequest.onerror = () => rej(voiceRequest.error); }),
           cryptoService.getExportableKey()
       ]);
       
@@ -228,12 +266,13 @@ export const dbService = {
           encryptionKey: key,
           files: files,
           chatHistory: chatResult,
-          persona: personaResult,
+          personas: personasResult,
+          voicePreference: voiceResult,
       };
   },
   
   async importData(data: any): Promise<void> {
-      const { encryptionKey, files, chatHistory, persona } = data;
+      const { encryptionKey, files, chatHistory, personas, voicePreference } = data;
       if (!encryptionKey || !Array.isArray(files)) {
           throw new Error("Invalid import file format.");
       }
@@ -260,8 +299,11 @@ export const dbService = {
       if (chatHistory) {
           importChatTrans.objectStore(CHAT_STORE).put(chatHistory);
       }
-       if (persona) {
-          importSettingsTrans.objectStore(SETTINGS_STORE).put(persona);
+       if (personas) {
+          importSettingsTrans.objectStore(SETTINGS_STORE).put(personas);
+      }
+      if (voicePreference) {
+          importSettingsTrans.objectStore(SETTINGS_STORE).put(voicePreference);
       }
       
        return new Promise((resolve, reject) => {

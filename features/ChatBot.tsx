@@ -13,14 +13,17 @@ import PersonaConfigModal from './common/PersonaConfigModal';
 const HISTORY_SUMMARY_THRESHOLD = 10;
 const MESSAGES_TO_KEEP_AFTER_SUMMARY = 4;
 
-const defaultPersona: Persona = {
+const createDefaultPersona = (): Persona => ({
+  id: crypto.randomUUID(),
+  isActive: true,
   systemPrompt: '',
   role: 'Helpful Assistant',
   personalityTraits: 'Friendly, knowledgeable, concise',
   characterDescription: '',
   avatarUrl: '',
   scenario: '',
-};
+});
+
 
 const ChatBot: React.FC = () => {
     const [chat, setChat] = useState<Chat | null>(null);
@@ -28,7 +31,7 @@ const ChatBot: React.FC = () => {
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [isSummarizing, setIsSummarizing] = useState(false);
-    const [persona, setPersona] = useState<Persona>(defaultPersona);
+    const [activePersona, setActivePersona] = useState<Persona>(createDefaultPersona());
     const [isPersonaModalOpen, setIsPersonaModalOpen] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     
@@ -41,32 +44,42 @@ const ChatBot: React.FC = () => {
         return prompt.trim();
     }, []);
 
-    useEffect(() => {
-        const initializeChat = async () => {
-            try {
-                const [history, savedPersona] = await Promise.all([
-                    dbService.getChatHistory(),
-                    dbService.getPersona()
-                ]);
-                
-                if (savedPersona) {
-                    setPersona(savedPersona);
-                }
-                setMessages(history);
-                
-                const systemInstruction = constructSystemPrompt(savedPersona || defaultPersona);
-                const chatInstance = GeminiService.createChatWithHistory(
-                    history.map(m => ({ role: m.role, parts: m.parts })),
-                    systemInstruction
-                );
-                setChat(chatInstance);
-            } catch (error) {
-                console.error("Failed to load chat history or persona:", error);
-                setChat(GeminiService.createChat(constructSystemPrompt(defaultPersona)));
+    const initializeChat = useCallback(async () => {
+        try {
+            const [history, savedPersonas] = await Promise.all([
+                dbService.getChatHistory(),
+                dbService.getPersonas()
+            ]);
+            
+            let currentPersona = savedPersonas.find(p => p.isActive);
+            if (!currentPersona) {
+                currentPersona = savedPersonas.length > 0 ? { ...savedPersonas[0], isActive: true } : createDefaultPersona();
+                // FIX: Add type annotation to ensure type compatibility when pushing a new persona.
+                const updatedPersonas: Persona[] = savedPersonas.map(p => ({ ...p, isActive: p.id === currentPersona!.id }));
+                if (savedPersonas.length === 0) updatedPersonas.push(currentPersona);
+                await dbService.savePersonas(updatedPersonas);
             }
-        };
-        initializeChat();
+
+            setActivePersona(currentPersona);
+            setMessages(history);
+            
+            const systemInstruction = constructSystemPrompt(currentPersona);
+            const chatInstance = GeminiService.createChatWithHistory(
+                history.map(m => ({ role: m.role, parts: m.parts })),
+                systemInstruction
+            );
+            setChat(chatInstance);
+        } catch (error) {
+            console.error("Failed to load chat history or persona:", error);
+            const defaultPersona = createDefaultPersona();
+            setActivePersona(defaultPersona);
+            setChat(GeminiService.createChat(constructSystemPrompt(defaultPersona)));
+        }
     }, [constructSystemPrompt]);
+
+    useEffect(() => {
+        initializeChat();
+    }, [initializeChat]);
     
     useEffect(() => {
         if (messages.length > 0) {
@@ -75,15 +88,15 @@ const ChatBot: React.FC = () => {
     }, [messages]);
     
     const handleSavePersona = async (newPersona: Persona) => {
-        setPersona(newPersona);
-        await dbService.savePersona(newPersona);
-        // Re-initialize chat with new persona
+        const allPersonas = await dbService.getPersonas();
+        const updatedPersonas = allPersonas.map(p => p.id === newPersona.id ? newPersona : p);
+        await dbService.savePersonas(updatedPersonas);
+        setActivePersona(newPersona);
+
+        // Re-initialize chat with new persona settings
         const systemInstruction = constructSystemPrompt(newPersona);
-        const chatHistory = await dbService.getChatHistory();
-        const chatInstance = GeminiService.createChatWithHistory(
-            chatHistory.map(m => ({ role: m.role, parts: m.parts })),
-            systemInstruction
-        );
+        const chatHistory = messages.map(m => ({ role: m.role, parts: m.parts }));
+        const chatInstance = GeminiService.createChatWithHistory(chatHistory, systemInstruction);
         setChat(chatInstance);
     };
 
@@ -150,7 +163,7 @@ const ChatBot: React.FC = () => {
                 ...recentMessages.map(m => ({ role: m.role, parts: m.parts })),
             ];
             
-            const systemInstruction = constructSystemPrompt(persona);
+            const systemInstruction = constructSystemPrompt(activePersona);
             const newChat = GeminiService.createChatWithHistory(newChatHistory, systemInstruction);
             setChat(newChat);
 
@@ -164,14 +177,14 @@ const ChatBot: React.FC = () => {
         } finally {
             setIsSummarizing(false);
         }
-    }, [chat, messages, isLoading, constructSystemPrompt, persona]);
+    }, [chat, messages, isLoading, constructSystemPrompt, activePersona]);
     
     const handleClearHistory = async () => {
         if (window.confirm("Are you sure you want to clear the entire chat history? This cannot be undone.")) {
             try {
                 await dbService.clearChatHistory();
                 setMessages([]);
-                setChat(GeminiService.createChat(constructSystemPrompt(persona)));
+                setChat(GeminiService.createChat(constructSystemPrompt(activePersona)));
             } catch (error) {
                 console.error("Failed to clear chat history:", error);
             }
@@ -191,11 +204,11 @@ const ChatBot: React.FC = () => {
                 <div className="flex-grow overflow-y-auto pr-4 space-y-6">
                     {messages.map((msg, index) => (
                         <div key={index} className={`flex items-start gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            {msg.role === 'model' && persona.avatarUrl && (
-                                <img src={persona.avatarUrl} alt="Avatar" className="w-8 h-8 rounded-full" />
+                            {msg.role === 'model' && activePersona.avatarUrl && (
+                                <img src={activePersona.avatarUrl} alt="Avatar" className="w-8 h-8 rounded-full" />
                             )}
-                             {msg.role === 'model' && !persona.avatarUrl && (
-                                <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold">G</div>
+                             {msg.role === 'model' && !activePersona.avatarUrl && (
+                                <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold">{activePersona.role ? activePersona.role.charAt(0) : 'G'}</div>
                             )}
                             <div className={`p-4 rounded-xl max-w-lg ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-200'}`}>
                                 <MarkdownRenderer content={msg.parts[0].text} />
@@ -204,7 +217,7 @@ const ChatBot: React.FC = () => {
                     ))}
                     {isLoading && (
                         <div className="flex justify-start items-start gap-3">
-                            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold">G</div>
+                             <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold">{activePersona.role ? activePersona.role.charAt(0) : 'G'}</div>
                             <div className="p-4 rounded-xl bg-slate-700">
                                 <Spinner text="Gemini is typing..."/>
                              </div>
@@ -228,7 +241,7 @@ const ChatBot: React.FC = () => {
             <PersonaConfigModal 
                 isOpen={isPersonaModalOpen}
                 onClose={() => setIsPersonaModalOpen(false)}
-                initialPersona={persona}
+                initialPersona={activePersona}
                 onSave={handleSavePersona}
             />
         </FeatureLayout>

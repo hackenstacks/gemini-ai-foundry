@@ -8,6 +8,8 @@ export interface ChatMessage {
 }
 
 export interface Persona {
+  id: string;
+  isActive?: boolean;
   systemPrompt: string;
   role: string;
   personalityTraits: string;
